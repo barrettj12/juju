@@ -19,7 +19,7 @@ type ApplicationConstraintsCommandsSuite struct {
 
 var _ = gc.Suite(&ApplicationConstraintsCommandsSuite{})
 
-func (s *ApplicationConstraintsCommandsSuite) TestSetInit(c *gc.C) {
+func (s *ApplicationConstraintsCommandsSuite) TestInit(c *gc.C) {
 	for _, test := range []struct {
 		args []string
 		err  string
@@ -34,46 +34,28 @@ func (s *ApplicationConstraintsCommandsSuite) TestSetInit(c *gc.C) {
 		err:  `no application name specified`,
 	}, {
 		args: []string{"mysql", "="},
-		err:  `malformed constraint "="`,
+		err:  `expected "key=value", got "="`,
 	}, {
 		args: []string{"cpu-power=250"},
 		err:  `invalid application name "cpu-power=250"`,
 	}, {
 		args: []string{"mysql", "cpu-power=250"},
+	}, {
+		args: []string{"-s", "mysql"},
+		err:  `option provided but not defined: -s`,
+	}, {
+		args: []string{"--application", "mysql"},
+		err:  `option provided but not defined: --application`,
+	}, {
+		args: []string{},
+		err:  `no application name specified`,
+	}, {
+		args: []string{"mysql-0"},
+		err:  `invalid application name "mysql-0"`,
+	}, {
+		args: []string{"mysql"},
 	}} {
-		cmd := application.NewApplicationSetConstraintsCommand()
-		cmd.SetClientStore(jujuclienttesting.MinimalStore())
-		err := cmdtesting.InitCommand(cmd, test.args)
-		if test.err == "" {
-			c.Check(err, jc.ErrorIsNil)
-		} else {
-			c.Check(err, gc.ErrorMatches, test.err)
-		}
-	}
-}
-
-func (s *ApplicationConstraintsCommandsSuite) TestGetInit(c *gc.C) {
-	for _, test := range []struct {
-		args []string
-		err  string
-	}{
-		{
-			args: []string{"-s", "mysql"},
-			err:  `option provided but not defined: -s`,
-		}, {
-			args: []string{"--application", "mysql"},
-			err:  `option provided but not defined: --application`,
-		}, {
-			args: []string{},
-			err:  `no application name specified`,
-		}, {
-			args: []string{"mysql-0"},
-			err:  `invalid application name "mysql-0"`,
-		}, {
-			args: []string{"mysql"},
-		},
-	} {
-		cmd := application.NewApplicationGetConstraintsCommand()
+		cmd := application.NewConstraintsCommand()
 		cmd.SetClientStore(jujuclienttesting.MinimalStore())
 		err := cmdtesting.InitCommand(cmd, test.args)
 		if test.err == "" {

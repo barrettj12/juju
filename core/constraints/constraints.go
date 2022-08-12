@@ -488,6 +488,42 @@ func splitRaw(s string) (name, val string, err error) {
 	return s[:eq], s[eq+1:], nil
 }
 
+// Lookup interprets a key string and returns the corresponding value.
+func (v *Value) Lookup(key string) (any, error) {
+	switch resolveAlias(key) {
+	case Arch:
+		return v.Arch, nil
+	case Container:
+		return v.Container, nil
+	case Cores:
+		return v.CpuCores, nil
+	case CpuPower:
+		return v.CpuPower, nil
+	case Mem:
+		return v.Mem, nil
+	case RootDisk:
+		return v.RootDisk, nil
+	case RootDiskSource:
+		return v.RootDiskSource, nil
+	case Tags:
+		return v.Tags, nil
+	case InstanceRole:
+		return v.InstanceRole, nil
+	case InstanceType:
+		return v.InstanceType, nil
+	case Spaces:
+		return v.Spaces, nil
+	case VirtType:
+		return v.VirtType, nil
+	case Zones:
+		return v.Zones, nil
+	case AllocatePublicIP:
+		return v.AllocatePublicIP, nil
+	default:
+		return nil, errors.Errorf("unknown constraint %q", key)
+	}
+}
+
 // setRaw interprets a name=value string and sets the supplied value.
 func (v *Value) setRaw(name, str string) error {
 	var err error
