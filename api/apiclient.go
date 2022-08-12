@@ -1264,9 +1264,18 @@ func (s *state) APICall(facade string, vers int, id, method string, args, respon
 			}
 		}
 		logger.Debugf("%v.%v API call not supported", facade, method)
+
+		// Make a suggestion to the user - update or reinstall Juju client
+		var suggestion string
+		if jujuversion.Current.Major < serverMajorVersion {
+			suggestion = "update your Juju client to match the version running on the controller"
+		} else {
+			suggestion = "reinstall Juju to match the version running on the controller"
+		}
+
 		return errors.NewNotSupported(nil, fmt.Sprintf(
-			"juju client with major version %d used with a controller having major version %d not supported\nupdate your juju client to match the version running on the controller",
-			jujuversion.Current.Major, serverMajorVersion))
+			"juju client with major version %d used with a controller having major version %d not supported\n%s",
+			jujuversion.Current.Major, serverMajorVersion, suggestion))
 	}
 	panic("unreachable")
 }
