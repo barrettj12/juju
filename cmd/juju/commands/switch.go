@@ -38,23 +38,26 @@ var usageSummary = `
 Selects or identifies the current controller and model.`[1:]
 
 var usageDetails = `
-When used without an argument, the command shows the current controller
-and its active model.
-When a single argument without a colon is provided juju first looks for a
-controller by that name and switches to it, and if it's not found it tries
-to switch to a model within current controller. mycontroller: switches to
-default model in mycontroller, :mymodel switches to mymodel in current
-controller and mycontroller:mymodel switches to mymodel on mycontroller.
-The `[1:] + "`juju models`" + ` command can be used to determine the active model
-(of any controller). An asterisk denotes it.
-
-Examples:
     juju switch
-    juju switch mymodel
-    juju switch mycontroller
-    juju switch mycontroller:mymodel
-    juju switch mycontroller:
-    juju switch :mymodel
+shows the current controller and active model (separated by a colon).
+
+    juju switch foo
+tries to find and switch to a controller named "foo". If no such controller
+exists, it will try to switch to a model named "foo" in the current controller.
+
+    juju switch foo:
+tries to switch to a controller named "foo".
+
+    juju switch :foo
+tries to switch to a model named "foo" in the current controller.
+
+    juju switch foo:bar
+tries to switch to a model named "bar" in the "foo" controller.
+
+To show available controllers, you can run
+    juju controllers
+and to show available models in the current controller:
+    juju models
 
 See also:
     controllers
