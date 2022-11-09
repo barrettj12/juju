@@ -299,6 +299,7 @@ type Context interface {
 	GetStdout() io.Writer
 	GetStderr() io.Writer
 	GetStdin() io.Reader
+	Done() <-chan struct{}
 }
 
 func (c *sshContainer) ssh(ctx Context, enablePty bool, target *resolvedTarget) (err error) {

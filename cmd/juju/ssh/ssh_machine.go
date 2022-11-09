@@ -216,6 +216,7 @@ func (c *sshMachine) getSSHOptions(enablePty bool, targets ...*resolvedTarget) (
 }
 
 func (c *sshMachine) ssh(ctx Context, enablePty bool, target *resolvedTarget) error {
+	fmt.Println("running ssh")
 	options, err := c.getSSHOptions(enablePty, target)
 	if err != nil {
 		return err
@@ -225,7 +226,32 @@ func (c *sshMachine) ssh(ctx Context, enablePty bool, target *resolvedTarget) er
 	cmd.Stdin = ctx.GetStdin()
 	cmd.Stdout = ctx.GetStdout()
 	cmd.Stderr = ctx.GetStderr()
-	return cmd.Run()
+
+	err = cmd.Start()
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	waitCh := make(chan error)
+	go func() {
+		waitCh <- cmd.Wait()
+		close(waitCh)
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Println("received ctx.Done()")
+			err := cmd.Kill()
+			if err != nil {
+				return errors.Trace(err)
+			}
+			return <-waitCh
+		case err := <-waitCh:
+			fmt.Println("received waitCH")
+			return errors.Trace(err)
+		}
+	}
 }
 
 func (c *sshMachine) copy(_ Context) error {

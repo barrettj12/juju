@@ -161,13 +161,14 @@ func (c *dashboardCommand) Run(ctx *cmd.Context) error {
 		urlCh <- url
 	}
 
-	stdctx, cancel := context.WithCancel(context.Background())
+	stdctx, cancel := context.WithCancel(ctx)
 	cancelOnce := sync.Once{}
 	defer cancelOnce.Do(cancel)
 	finishCh := make(chan error)
 	go func() {
 		defer close(finishCh)
 		err := runner(stdctx, runnerURLCallBack)
+		fmt.Println("runner finished yay!!!!")
 		finishCh <- errors.Annotate(err, "running connection runner")
 	}()
 
@@ -192,15 +193,24 @@ func (c *dashboardCommand) Run(ctx *cmd.Context) error {
 
 	signal.Notify(c.signalCh, os.Interrupt, os.Kill)
 	for {
+		//fmt.Println("I'm in a for loop")
 		select {
 		case waitSig := <-c.signalCh:
+			//panic("fofofofofofoof")
+			fmt.Println("case waitSig := <-c.signalCh")
 			ctx.Infof("Received signal %s, stopping dashboard proxy connection", waitSig)
 			cancelOnce.Do(cancel)
-		case err, ok := <-finishCh:
-			if ok && err != nil {
+			<-ctx.Done()
+			fmt.Println("I'm here go f*** yourself")
+		case err := <-finishCh:
+			fmt.Println("received finishCH in dashboard.go")
+			//panic("case err, ok := <-finishCh")
+			if err != nil {
 				return errors.Wrap(userErr, err)
 			}
 			return userErr
+		default:
+
 		}
 	}
 }
@@ -241,7 +251,9 @@ func tunnelSSHRunner(
 			return errors.Trace(err)
 		}
 		cmdCtx := defCtx.With(ctx)
-		return sshCommand.Run(cmdCtx)
+		err = sshCommand.Run(cmdCtx)
+		fmt.Println("finished running")
+		return err
 	}
 }
 
