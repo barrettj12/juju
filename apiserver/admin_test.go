@@ -27,11 +27,10 @@ import (
 	"github.com/juju/juju/api"
 	apimachiner "github.com/juju/juju/api/agent/machiner"
 	apiclient "github.com/juju/juju/api/client/client"
+	machineclient "github.com/juju/juju/api/client/machinemanager"
 	apitesting "github.com/juju/juju/api/testing"
-	"github.com/juju/juju/apiserver"
 	"github.com/juju/juju/apiserver/common"
 	"github.com/juju/juju/apiserver/facades/client/controller"
-	"github.com/juju/juju/apiserver/httpcontext"
 	servertesting "github.com/juju/juju/apiserver/testing"
 	"github.com/juju/juju/apiserver/testserver"
 	corecontroller "github.com/juju/juju/controller"
@@ -52,7 +51,6 @@ import (
 
 type baseLoginSuite struct {
 	jujutesting.JujuConnSuite
-
 	mgmtSpace *state.Space
 }
 
@@ -70,17 +68,6 @@ func (s *baseLoginSuite) SetUpTest(c *gc.C) {
 
 	err = s.State.UpdateControllerConfig(map[string]interface{}{corecontroller.JujuManagementSpace: "mgmt01"}, nil)
 	c.Assert(err, jc.ErrorIsNil)
-}
-
-func (s *baseLoginSuite) newServer(c *gc.C) (*api.Info, *apiserver.Server) {
-	return s.newServerWithConfig(c, testserver.DefaultServerConfig(c, nil))
-}
-
-func (s *baseLoginSuite) newServerWithConfig(c *gc.C, cfg apiserver.ServerConfig) (*api.Info, *apiserver.Server) {
-	cfg.Controller = s.JujuConnSuite.Controller
-	server := testserver.NewServerWithConfig(c, s.StatePool, cfg)
-	s.AddCleanup(func(c *gc.C) { assertStop(c, server) })
-	return server.Info, server.APIServer
 }
 
 // loginSuite is built on statetesting.StateSuite not JujuConnSuite.
@@ -365,7 +352,7 @@ func (s *loginSuite) setupRateLimiting(c *gc.C) {
 	err := s.State.UpdateControllerConfig(
 		map[string]interface{}{
 			corecontroller.AgentRateLimitMax:  1,
-			corecontroller.AgentRateLimitRate: time.Second,
+			corecontroller.AgentRateLimitRate: time.Second.String(),
 		}, nil)
 	c.Assert(err, jc.ErrorIsNil)
 }
@@ -1482,7 +1469,7 @@ func (s *migrationSuite) TestExportingModel(c *gc.C) {
 	c.Check(err, jc.ErrorIsNil)
 
 	// Modifying commands like destroy machines are not.
-	err = apiclient.NewClient(userConn).DestroyMachines("42")
+	_, err = machineclient.NewClient(userConn).DestroyMachinesWithParams(false, false, nil, "42")
 	c.Check(err, gc.ErrorMatches, "model migration in progress")
 }
 
@@ -1581,26 +1568,4 @@ func (t errorTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}, nil
 	}
 	return t.fallback.RoundTrip(req)
-}
-
-type mockDelayAuthenticator struct {
-	httpcontext.LocalMacaroonAuthenticator
-	delay chan struct{}
-}
-
-func (a *mockDelayAuthenticator) AuthenticateLoginRequest(
-	serverHost string,
-	modelUUID string,
-	req params.LoginRequest,
-) (httpcontext.AuthInfo, error) {
-	select {
-	case <-time.After(coretesting.LongWait):
-		panic("timed out delaying login")
-	case <-a.delay:
-	}
-	tag, err := names.ParseTag(req.AuthTag)
-	if err != nil {
-		return httpcontext.AuthInfo{}, errors.Trace(err)
-	}
-	return httpcontext.AuthInfo{Entity: &mockEntity{tag: tag}}, nil
 }

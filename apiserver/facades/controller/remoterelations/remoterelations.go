@@ -18,14 +18,14 @@ import (
 	"github.com/juju/juju/state/watcher"
 )
 
-// API provides access to version 1 of the remote relations API facade.
+// APIv1 provides access to version 1 of the remote relations API facade.
 type APIv1 struct {
 	*API
 }
 
 // API provides access to the remote relations API facade.
 type API struct {
-	*common.ControllerConfigAPI
+	ControllerConfigAPI
 	st         RemoteRelationsState
 	resources  facade.Resources
 	authorizer facade.Authorizer
@@ -34,7 +34,7 @@ type API struct {
 // NewRemoteRelationsAPI returns a new server-side API facade.
 func NewRemoteRelationsAPI(
 	st RemoteRelationsState,
-	controllerCfgAPI *common.ControllerConfigAPI,
+	controllerCfgAPI ControllerConfigAPI,
 	resources facade.Resources,
 	authorizer facade.Authorizer,
 ) (*API, error) {
@@ -193,6 +193,7 @@ func (api *API) remoteRelation(entity params.Entity) (*params.RemoteRelation, er
 		Life:      life.Value(rel.Life().String()),
 		Suspended: rel.Suspended(),
 		Key:       tag.Id(),
+		UnitCount: rel.UnitCount(),
 	}
 	for _, ep := range rel.Endpoints() {
 		// Try looking up the info for the remote application.
@@ -378,10 +379,6 @@ func (api *API) WatchLocalRelationChanges(args params.Entities) (params.RemoteRe
 	return results, nil
 }
 
-// Mask out new methods from the old API versions. The API reflection
-// code in rpc/rpcreflect/type.go:newMethod skips 2-argument methods,
-// so this removes the method as far as the RPC machinery is concerned.
-//
 // WatchLocalRelationChanges doesn't exist before the v2 API.
 func (api *APIv1) WatchLocalRelationChanges(_, _ struct{}) {}
 

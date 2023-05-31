@@ -6,6 +6,7 @@ package controllerport_test
 import (
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
+	mgotesting "github.com/juju/mgo/v2/testing"
 	"github.com/juju/pubsub/v2"
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
@@ -18,10 +19,12 @@ import (
 	"github.com/juju/juju/agent"
 	"github.com/juju/juju/controller"
 	"github.com/juju/juju/state"
+	statetesting "github.com/juju/juju/state/testing"
 	"github.com/juju/juju/worker/controllerport"
 )
 
 type ManifoldSuite struct {
+	statetesting.StateSuite
 	testing.IsolationSuite
 
 	config           controllerport.ManifoldConfig
@@ -39,18 +42,34 @@ type ManifoldSuite struct {
 
 var _ = gc.Suite(&ManifoldSuite{})
 
+func (s *ManifoldSuite) SetUpSuite(c *gc.C) {
+	s.IsolationSuite.SetUpSuite(c)
+
+	err := mgotesting.MgoServer.Start(nil)
+	c.Assert(err, jc.ErrorIsNil)
+	s.IsolationSuite.AddCleanup(func(*gc.C) { mgotesting.MgoServer.Destroy() })
+
+	s.StateSuite.SetUpSuite(c)
+}
+
 func (s *ManifoldSuite) SetUpTest(c *gc.C) {
 	s.IsolationSuite.SetUpTest(c)
 
 	s.agent = &mockAgent{}
 	s.hub = pubsub.NewStructuredHub(nil)
-	s.state = stubStateTracker{}
 	s.logger = loggo.GetLogger("controllerport_manifold")
 	s.controllerConfig = controller.Config(map[string]interface{}{
 		"controller-api-port": 2048,
 	})
+
 	s.worker = &struct{ worker.Worker }{}
 	s.stub.ResetCalls()
+
+	s.StateSuite.SetUpTest(c)
+
+	s.state = stubStateTracker{
+		pool: s.StatePool,
+	}
 
 	s.context = s.newContext(nil)
 	s.config = controllerport.ManifoldConfig{
@@ -62,7 +81,18 @@ func (s *ManifoldSuite) SetUpTest(c *gc.C) {
 		GetControllerConfig:     s.getControllerConfig,
 		NewWorker:               s.newWorker,
 	}
+
 	s.manifold = controllerport.Manifold(s.config)
+}
+
+func (s *ManifoldSuite) TearDownSuite(c *gc.C) {
+	s.StateSuite.TearDownSuite(c)
+	s.IsolationSuite.TearDownSuite(c)
+}
+
+func (s *ManifoldSuite) TearDownTest(c *gc.C) {
+	s.StateSuite.TearDownTest(c)
+	s.IsolationSuite.TearDownTest(c)
 }
 
 func (s *ManifoldSuite) newContext(overlay map[string]interface{}) dependency.Context {
@@ -181,12 +211,12 @@ func (s *ManifoldSuite) startWorkerClean(c *gc.C) worker.Worker {
 
 type stubStateTracker struct {
 	testing.Stub
-	pool state.StatePool
+	pool *state.StatePool
 }
 
 func (s *stubStateTracker) Use() (*state.StatePool, error) {
 	s.MethodCall(s, "Use")
-	return &s.pool, s.NextErr()
+	return s.pool, s.NextErr()
 }
 
 func (s *stubStateTracker) Done() error {

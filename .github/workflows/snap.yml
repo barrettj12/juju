@@ -1,5 +1,14 @@
 name: "Snapcraft"
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'snap/**'
+      - '.github/workflows/snap.yml'
+  workflow_dispatch:
 permissions:
   contents: read
 
@@ -15,30 +24,21 @@ jobs:
       shell: bash
       run: |
         set -euxo pipefail
-        sudo apt-get remove lxd lxd-client
         sudo snap install snapcraft --classic
-        sudo snap install lxd
-        sudo lxd waitready
-        sudo lxd init --auto
-        sudo chmod a+wr /var/snap/lxd/common/lxd/unix.socket
         echo "/snap/bin" >> $GITHUB_PATH
 
     - name: Checkout
       uses: actions/checkout@v3
 
-    - name: Find required go version
-      id: go-version
-      if: env.RUN_TEST == 'RUN'
-      run: |
-        set -euxo pipefail
-        echo "::set-output name=version::$(grep '^go ' go.mod | awk '{print $2}')"
+    - name: Setup LXD
+      uses: canonical/setup-lxd@90d76101915da56a42a562ba766b1a77019242fd
 
     - name: Set up Go
       if: env.RUN_TEST == 'RUN'
       uses: actions/setup-go@v3
       with:
-        go-version: ${{ steps.go-version.outputs.version }}
-      id: go
+        go-version-file: 'go.mod'
+        cache: true
 
     - name: Build snap
       shell: bash
@@ -56,5 +56,4 @@ jobs:
       shell: bash
       run: |
         set -euxo pipefail
-        lxc network set lxdbr0 ipv6.address none
         juju bootstrap localhost

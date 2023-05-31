@@ -54,8 +54,6 @@ type Environ struct {
 	ecfgObj    *environConfig
 	namespace  instance.Namespace
 
-	vcn     ociCore.Vcn
-	seclist ociCore.SecurityList
 	// subnets contains one subnet for each availability domain
 	// these will get created once the environment is spun up, and
 	// will never change.
@@ -65,7 +63,6 @@ type Environ struct {
 var _ common.ZonedEnviron = (*Environ)(nil)
 var _ storage.ProviderRegistry = (*Environ)(nil)
 var _ environs.Environ = (*Environ)(nil)
-var _ environs.Firewaller = (*Environ)(nil)
 var _ environs.Networking = (*Environ)(nil)
 var _ environs.NetworkingEnviron = (*Environ)(nil)
 
@@ -501,7 +498,10 @@ func (e *Environ) startInstance(
 	}
 
 	series := args.InstanceConfig.Series
-	arches := args.Tools.Arches()
+	arch, err := args.Tools.OneArch()
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
 
 	types := imgCache.SupportedShapes(series)
 
@@ -519,7 +519,7 @@ func (e *Environ) startInstance(
 		types,
 		&instances.InstanceConstraint{
 			Series:      series,
-			Arches:      arches,
+			Arch:        arch,
 			Constraints: args.Constraints,
 		},
 	)
@@ -554,9 +554,9 @@ func (e *Environ) startInstance(
 	// If the machine that is spawning is not a controller, then userdata
 	// will take care of it's initial setup, and waiting for a running
 	// status is not necessary
-	if args.InstanceConfig.Controller != nil {
-		apiPort = args.InstanceConfig.Controller.Config.APIPort()
-		statePort = args.InstanceConfig.Controller.Config.StatePort()
+	if args.InstanceConfig.IsController() {
+		apiPort = args.InstanceConfig.ControllerConfig.APIPort()
+		statePort = args.InstanceConfig.ControllerConfig.StatePort()
 		desiredStatus = ociCore.InstanceLifecycleStateRunning
 	} else {
 		desiredStatus = ociCore.InstanceLifecycleStateProvisioning

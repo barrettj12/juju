@@ -5,22 +5,17 @@ package migration
 
 import (
 	"github.com/juju/errors"
+	"github.com/juju/replicaset/v2"
 	"github.com/juju/version/v2"
 
-	"github.com/juju/juju/resource"
 	"github.com/juju/juju/state"
 )
 
 // PrecheckShim wraps a pair of *state.States to implement PrecheckBackend.
 func PrecheckShim(modelState, controllerState *state.State) (PrecheckBackend, error) {
-	rSt, err := modelState.Resources()
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
 	return &precheckShim{
 		State:           modelState,
 		controllerState: controllerState,
-		resourcesSt:     rSt,
 	}, nil
 }
 
@@ -29,7 +24,6 @@ func PrecheckShim(modelState, controllerState *state.State) (PrecheckBackend, er
 type precheckShim struct {
 	*state.State
 	controllerState *state.State
-	resourcesSt     state.Resources
 }
 
 // Model implements PrecheckBackend.
@@ -99,15 +93,13 @@ func (s *precheckShim) AllRelations() ([]PrecheckRelation, error) {
 	return out, nil
 }
 
-// ListPendingResources implements PrecheckBackend.
-func (s *precheckShim) ListPendingResources(app string) ([]resource.Resource, error) {
-	resources, err := s.resourcesSt.ListPendingResources(app)
-	return resources, errors.Trace(err)
-}
-
 // ControllerBackend implements PrecheckBackend.
 func (s *precheckShim) ControllerBackend() (PrecheckBackend, error) {
 	return PrecheckShim(s.controllerState, s.controllerState)
+}
+
+func (s precheckShim) MongoCurrentStatus() (*replicaset.Status, error) {
+	return nil, errors.NotImplementedf("this is not used but just for implementing the interface")
 }
 
 // PoolShim wraps a state.StatePool to produce a Pool.
@@ -160,8 +152,24 @@ func (s *precheckRelationShim) Unit(pu PrecheckUnit) (PrecheckRelationUnit, erro
 	return ru, errors.Trace(err)
 }
 
-// IsCrossModel implements PreCheckRelation.
-func (s *precheckRelationShim) IsCrossModel() (bool, error) {
-	_, result, err := s.Relation.RemoteApplication()
-	return result, errors.Trace(err)
+// AllRemoteUnits implements PreCheckRelation.
+func (s *precheckRelationShim) AllRemoteUnits(appName string) ([]PrecheckRelationUnit, error) {
+	all, err := s.Relation.AllRemoteUnits(appName)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	out := make([]PrecheckRelationUnit, len(all))
+	for i, ru := range all {
+		out[i] = ru
+	}
+	return out, nil
+}
+
+// RemoteApplication implements PreCheckRelation.
+func (s *precheckRelationShim) RemoteApplication() (string, bool, error) {
+	app, isCrossModel, err := s.Relation.RemoteApplication()
+	if isCrossModel {
+		return app.Name(), true, nil
+	}
+	return "", false, errors.Trace(err)
 }

@@ -19,7 +19,7 @@ import (
 
 	"github.com/juju/juju/api/base"
 	coremigration "github.com/juju/juju/core/migration"
-	"github.com/juju/juju/resource"
+	"github.com/juju/juju/core/resources"
 	"github.com/juju/juju/rpc/params"
 	"github.com/juju/juju/tools"
 	jujuversion "github.com/juju/juju/version"
@@ -39,6 +39,12 @@ func NewClient(caller base.APICaller) *Client {
 type Client struct {
 	caller            base.FacadeCaller
 	httpClientFactory func() (*httprequest.Client, error)
+}
+
+// BestFacadeVersion returns the best supported facade version
+// on the target controller.
+func (c *Client) BestFacadeVersion() int {
+	return c.caller.BestAPIVersion()
 }
 
 func (c *Client) Prechecks(model coremigration.ModelInfo) error {
@@ -66,8 +72,21 @@ func (c *Client) Abort(modelUUID string) error {
 }
 
 // Activate marks a migrated model as being ready to use.
-func (c *Client) Activate(modelUUID string) error {
-	args := params.ModelArgs{ModelTag: names.NewModelTag(modelUUID).String()}
+func (c *Client) Activate(modelUUID string, sourceInfo coremigration.SourceControllerInfo, relatedModels []string) error {
+	if c.caller.BestAPIVersion() < 2 {
+		args := params.ModelArgs{ModelTag: names.NewModelTag(modelUUID).String()}
+		return errors.Trace(c.caller.FacadeCall("Activate", args, nil))
+	}
+	args := params.ActivateModelArgs{
+		ModelTag: names.NewModelTag(modelUUID).String(),
+	}
+	if len(relatedModels) > 0 {
+		args.ControllerTag = sourceInfo.ControllerTag.String()
+		args.ControllerAlias = sourceInfo.ControllerAlias
+		args.SourceAPIAddrs = sourceInfo.Addrs
+		args.SourceCACert = sourceInfo.CACert
+		args.CrossModelUUIDs = relatedModels
+	}
 	return errors.Trace(c.caller.FacadeCall("Activate", args, nil))
 }
 
@@ -113,7 +132,7 @@ func (c *Client) UploadTools(modelUUID string, r io.ReadSeeker, vers version.Bin
 }
 
 // UploadResource uploads a resource to the migration endpoint.
-func (c *Client) UploadResource(modelUUID string, res resource.Resource, r io.ReadSeeker) error {
+func (c *Client) UploadResource(modelUUID string, res resources.Resource, r io.ReadSeeker) error {
 	args := makeResourceArgs(res)
 	args.Add("application", res.ApplicationID)
 	err := c.resourcePost(modelUUID, args, r)
@@ -121,7 +140,7 @@ func (c *Client) UploadResource(modelUUID string, res resource.Resource, r io.Re
 }
 
 // SetPlaceholderResource sets the metadata for a placeholder resource.
-func (c *Client) SetPlaceholderResource(modelUUID string, res resource.Resource) error {
+func (c *Client) SetPlaceholderResource(modelUUID string, res resources.Resource) error {
 	args := makeResourceArgs(res)
 	args.Add("application", res.ApplicationID)
 	err := c.resourcePost(modelUUID, args, nil)
@@ -129,7 +148,7 @@ func (c *Client) SetPlaceholderResource(modelUUID string, res resource.Resource)
 }
 
 // SetUnitResource sets the metadata for a particular unit resource.
-func (c *Client) SetUnitResource(modelUUID, unit string, res resource.Resource) error {
+func (c *Client) SetUnitResource(modelUUID, unit string, res resources.Resource) error {
 	args := makeResourceArgs(res)
 	args.Add("unit", unit)
 	err := c.resourcePost(modelUUID, args, nil)
@@ -143,7 +162,7 @@ func (c *Client) resourcePost(modelUUID string, args url.Values, r io.ReadSeeker
 	return errors.Trace(err)
 }
 
-func makeResourceArgs(res resource.Resource) url.Values {
+func makeResourceArgs(res resources.Resource) url.Values {
 	args := url.Values{}
 	args.Add("name", res.Name)
 	args.Add("type", res.Type.String())

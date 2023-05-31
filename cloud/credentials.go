@@ -4,7 +4,9 @@
 package cloud
 
 import (
+	"encoding/pem"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"strings"
 
@@ -236,6 +238,53 @@ func (s CredentialSchema) Finalize(
 	return newAttrs, nil
 }
 
+// ExpandFilePathsOfCredential iterates over the credential schema attributes
+// and checks if the credential attribute has the ExpandFilePath flag set. If so
+// the value of the credential attribute will be interrupted as a file with it's
+// contents replaced with that of the file.
+func ExpandFilePathsOfCredential(
+	cred Credential,
+	schemas map[AuthType]CredentialSchema,
+) (Credential, error) {
+	schema, exists := schemas[cred.AuthType()]
+	if !exists {
+		return cred, nil
+	}
+
+	attributes := cred.Attributes()
+	for _, credAttr := range schema {
+		if !credAttr.CredentialAttr.ExpandFilePath {
+			continue
+		}
+
+		val, exists := attributes[credAttr.Name]
+		if !exists || val == "" {
+			continue
+		}
+
+		// NOTE: tlm dirty fix for lp1976620. This will be removed in Juju 3.0
+		// when we stop overloading the keys in cloud credentials with different
+		// values.
+		if block, _ := pem.Decode([]byte(val)); block != nil {
+			continue
+		}
+
+		abs, err := ValidateFileAttrValue(val)
+		if err != nil {
+			return cred, fmt.Errorf("determining file path value for credential attribute: %w", err)
+		}
+
+		contents, err := ioutil.ReadFile(abs)
+		if err != nil {
+			return cred, fmt.Errorf("reading file %q contents for credential attribute %q: %w", abs, credAttr.Name, err)
+		}
+
+		attributes[credAttr.Name] = string(contents)
+	}
+
+	return NewNamedCredential(cred.Label, cred.AuthType(), attributes, cred.Revoked), nil
+}
+
 // ValidateFileAttrValue returns the normalised file path, so
 // long as the specified path is valid and not a directory.
 func ValidateFileAttrValue(path string) (string, error) {
@@ -245,10 +294,10 @@ func ValidateFileAttrValue(path string) (string, error) {
 	}
 	info, err := os.Stat(absPath)
 	if err != nil {
-		return "", errors.Errorf("invalid file path: %s", absPath)
+		return "", fmt.Errorf("invalid file path: %w", err)
 	}
 	if info.IsDir() {
-		return "", errors.Errorf("file path must be a file: %s", absPath)
+		return "", fmt.Errorf("file path %q must be a file", absPath)
 	}
 	return absPath, nil
 }

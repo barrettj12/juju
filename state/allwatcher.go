@@ -9,7 +9,6 @@ import (
 
 	"github.com/juju/charm/v8"
 	"github.com/juju/errors"
-	"github.com/juju/loggo"
 	"github.com/juju/mgo/v2"
 	"github.com/juju/mgo/v2/bson"
 
@@ -19,14 +18,13 @@ import (
 	"github.com/juju/juju/core/multiwatcher"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/permission"
+	"github.com/juju/juju/core/series"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/state/watcher"
 )
 
-// Yes this is global. We should probably put a logger into the State object,
-// and create a child logger from that.
-var allWatcherLogger = loggo.GetLogger("juju.state.allwatcher")
+var allWatcherLogger = logger.Child("allwatcher")
 
 // allWatcherBacking implements AllWatcherBacking by fetching entities
 // for all models from the State.
@@ -341,11 +339,16 @@ func (m *backingMachine) updated(ctx *allWatcherContext) error {
 
 	}
 	isManual := isManualMachine(m.Id, m.Nonce, providerType)
+	base, err := series.GetBaseFromSeries(m.Series)
+	if err != nil {
+		return errors.Annotatef(err, "converting machine series %q to base", m.Series) // Should not happen.
+	}
 	info := &multiwatcher.MachineInfo{
 		ModelUUID:                m.ModelUUID,
 		ID:                       m.Id,
 		Life:                     life.Value(m.Life.String()),
 		Series:                   m.Series,
+		Base:                     base.DisplayString(),
 		ContainerType:            m.ContainerType,
 		IsManual:                 isManual,
 		Jobs:                     paramsJobsFromJobs(m.Jobs),
@@ -513,18 +516,27 @@ func (u *backingUnit) updateAgentVersion(info *multiwatcher.UnitInfo) {
 
 func (u *backingUnit) updated(ctx *allWatcherContext) error {
 	allWatcherLogger.Tracef(`unit "%s:%s" updated`, ctx.modelUUID, ctx.id)
+	var base series.Base
+	if u.Series != "" {
+		var err error
+		base, err = series.GetBaseFromSeries(u.Series)
+		if err != nil {
+			return errors.Annotatef(err, "converting unit series %q to base", u.Series)
+		}
+	}
 	info := &multiwatcher.UnitInfo{
 		ModelUUID:   u.ModelUUID,
 		Name:        u.Name,
 		Application: u.Application,
 		Series:      u.Series,
+		Base:        base.DisplayString(),
 		Life:        life.Value(u.Life.String()),
 		MachineID:   u.MachineId,
 		Principal:   u.Principal,
 		Subordinate: u.Principal != "",
 	}
 	if u.CharmURL != nil {
-		info.CharmURL = u.CharmURL.String()
+		info.CharmURL = *u.CharmURL
 	}
 
 	// Construct a unit for the purpose of retrieving other fields as necessary.
@@ -649,7 +661,7 @@ func (app *backingApplication) updated(ctx *allWatcherContext) error {
 		ModelUUID:   app.ModelUUID,
 		Name:        app.Name,
 		Exposed:     app.Exposed,
-		CharmURL:    app.CharmURL.String(),
+		CharmURL:    *app.CharmURL,
 		Life:        life.Value(app.Life.String()),
 		MinUnits:    app.MinUnits,
 		Subordinate: app.Subordinate,
@@ -795,7 +807,7 @@ func (ch *backingCharm) updated(ctx *allWatcherContext) error {
 	allWatcherLogger.Tracef(`charm "%s:%s" updated`, ctx.modelUUID, ctx.id)
 	info := &multiwatcher.CharmInfo{
 		ModelUUID:    ch.ModelUUID,
-		CharmURL:     ch.URL.String(),
+		CharmURL:     *ch.URL,
 		CharmVersion: ch.CharmVersion,
 		Life:         life.Value(ch.Life.String()),
 	}
@@ -852,7 +864,6 @@ func (app *backingRemoteApplication) updated(ctx *allWatcherContext) error {
 	info := &multiwatcher.RemoteApplicationUpdate{
 		ModelUUID: ctx.modelUUID, // ModelUUID not part of the remoteApplicationDoc
 		Name:      app.Name,
-		OfferUUID: app.OfferUUID,
 		OfferURL:  app.URL,
 		Life:      life.Value(app.Life.String()),
 	}
@@ -881,41 +892,39 @@ func (app *backingRemoteApplication) updated(ctx *allWatcherContext) error {
 }
 
 func (app *backingRemoteApplication) updateOfferInfo(ctx *allWatcherContext) error {
-	// Remote Applications reference an offer using the offer UUID.
-	// Offers in the store use offer name as the id key, so we need
-	// to look through the store entities to find any matching offer.
-	var offerInfo *multiwatcher.ApplicationOfferInfo
 	entities := ctx.store.All()
 	for _, e := range entities {
-		var ok bool
-		if offerInfo, ok = e.(*multiwatcher.ApplicationOfferInfo); ok {
-			if offerInfo.OfferUUID != app.OfferUUID {
-				offerInfo = nil
-				continue
-			}
-			break
+		var (
+			offerInfo *multiwatcher.ApplicationOfferInfo
+			ok        bool
+		)
+		if offerInfo, ok = e.(*multiwatcher.ApplicationOfferInfo); !ok {
+			continue
 		}
+		if offerInfo.ModelUUID != ctx.modelUUID {
+			continue
+		}
+		// TODO: be smarter about reading status.
+		// We should only read offers relevant to the remote app that has been updated,
+		// but there would be more db reads to do the filtering than just reading the
+		// connection info for each offer, even if it might not have changed.
+		remoteConnection, err := ctx.state.RemoteConnectionStatus(offerInfo.OfferUUID)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		offerInfo.TotalConnectedCount = remoteConnection.TotalConnectionCount()
+		offerInfo.ActiveConnectedCount = remoteConnection.ActiveConnectionCount()
+		ctx.store.Update(offerInfo)
 	}
-	// If we have an existing remote application,
-	// adjust any offer info also.
-	if offerInfo == nil {
-		return nil
-	}
-	// TODO: be smarter about reading status.
-	remoteConnection, err := ctx.state.RemoteConnectionStatus(offerInfo.OfferUUID)
-	if err != nil {
-		return errors.Trace(err)
-	}
-	offerInfo.TotalConnectedCount = remoteConnection.TotalConnectionCount()
-	offerInfo.ActiveConnectedCount = remoteConnection.ActiveConnectionCount()
-	ctx.store.Update(offerInfo)
 	return nil
 }
 
 func (app *backingRemoteApplication) removed(ctx *allWatcherContext) (err error) {
 	allWatcherLogger.Tracef(`remote application "%s:%s" removed`, ctx.modelUUID, ctx.id)
 	// TODO: see if we need the check of consumer proxy like in the change
-	err = app.updateOfferInfo(ctx)
+	if app.IsConsumerProxy {
+		err = app.updateOfferInfo(ctx)
+	}
 	if err != nil {
 		// We log the error but don't prevent the remote app removal.
 		allWatcherLogger.Errorf("updating application offer info: %v", err)
@@ -949,8 +958,12 @@ func (b *backingApplicationOffer) updated(ctx *allWatcherContext) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	curl, _ := localApp.CharmURL()
 	info.ApplicationName = offer.ApplicationName
+	cURL, _ := localApp.CharmURL()
+	curl, err := charm.ParseURL(*cURL)
+	if err != nil {
+		return errors.Trace(err)
+	}
 	info.CharmName = curl.Name
 
 	remoteConnection, err := ctx.state.RemoteConnectionStatus(info.OfferUUID)
@@ -1619,7 +1632,7 @@ type AllWatcherBacking interface {
 // NewAllWatcherBacking creates a backing object that watches
 // all the models in the controller for changes that are fed through
 // the multiwatcher infrastructure.
-func NewAllWatcherBacking(pool *StatePool) AllWatcherBacking {
+func NewAllWatcherBacking(pool *StatePool) (AllWatcherBacking, error) {
 	collectionNames := []string{
 		// The ordering here matters. We want to load machines, then
 		// applications, then units. The others don't matter so much.
@@ -1646,13 +1659,16 @@ func NewAllWatcherBacking(pool *StatePool) AllWatcherBacking {
 		podSpecsC,
 	}
 	collectionMap := makeAllWatcherCollectionInfo(collectionNames)
-	controllerState := pool.SystemState()
+	controllerState, err := pool.SystemState()
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
 	return &allWatcherBacking{
 		watcher:          controllerState.workers.txnLogWatcher(),
 		stPool:           pool,
 		collections:      collectionNames,
 		collectionByName: collectionMap,
-	}
+	}, nil
 }
 
 // Watch watches all the collections.
@@ -1671,7 +1687,11 @@ func (b *allWatcherBacking) Unwatch(in chan<- watcher.Change) {
 
 // GetAll fetches all items that we want to watch from the state.
 func (b *allWatcherBacking) GetAll(store multiwatcher.Store) error {
-	modelUUIDs, err := b.stPool.SystemState().AllModelUUIDs()
+	systemState, err := b.stPool.SystemState()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	modelUUIDs, err := systemState.AllModelUUIDs()
 	if err != nil {
 		return errors.Annotate(err, "error loading models")
 	}
@@ -1720,9 +1740,13 @@ func (b *allWatcherBacking) Changed(store multiwatcher.Store, change watcher.Cha
 
 	doc := reflect.New(c.docType).Interface().(backingEntityDoc)
 
+	systemState, err := b.stPool.SystemState()
+	if err != nil {
+		return errors.Trace(err)
+	}
 	ctx := &allWatcherContext{
 		// In order to have a valid state instance, use the controller model initially.
-		state:     b.stPool.SystemState(),
+		state:     systemState,
 		store:     store,
 		modelUUID: modelUUID,
 		id:        id,
@@ -1763,7 +1787,11 @@ func (b *allWatcherBacking) idForChange(change watcher.Change) (string, string, 
 		return modelUUID, modelUUID, nil
 	} else if change.C == permissionsC {
 		// All permissions can just load using the system state.
-		modelUUID := b.stPool.SystemState().ModelUUID()
+		systemState, err := b.stPool.SystemState()
+		if err != nil {
+			return "", "", errors.Trace(err)
+		}
+		modelUUID := systemState.ModelUUID()
 		return modelUUID, change.Id.(string), nil
 	}
 
@@ -1811,42 +1839,43 @@ func loadAllWatcherEntities(st *State, loadOrder []string, collectionByName map[
 		if c.subsidiary {
 			continue
 		}
-
-		if err := func(name string) error {
-			col, closer := db.GetCollection(name)
-			defer closer()
-			infoSlicePtr := reflect.New(reflect.SliceOf(c.docType))
-
-			// models is a global collection so need to filter on UUID.
-			var filter bson.M
-			if name == modelsC {
-				filter = bson.M{"_id": st.ModelUUID()}
-			}
-			query := col.Find(filter)
-			// Units are ordered so we load the subordinates first.
-			if name == unitsC {
-				// Subordinates have a principal, so will sort after the
-				// empty string, which is what principal units have.
-				query = query.Sort("principal")
-			}
-			if err := query.All(infoSlicePtr.Interface()); err != nil {
-				return errors.Errorf("cannot get all %s: %v", name, err)
-			}
-			infos := infoSlicePtr.Elem()
-			for i := 0; i < infos.Len(); i++ {
-				info := infos.Index(i).Addr().Interface().(backingEntityDoc)
-				ctx.id = info.mongoID()
-				err := info.updated(ctx)
-				if err != nil {
-					return errors.Annotatef(err, "failed to initialise backing for %s:%v", name, ctx.id)
-				}
-			}
-			return nil
-		}(c.name); err != nil {
+		if err := loadOneWatcherEntity(ctx, db, st.ModelUUID(), c.docType, c.name); err != nil {
 			return errors.Trace(err)
 		}
 	}
 
+	return nil
+}
+
+func loadOneWatcherEntity(ctx *allWatcherContext, db Database, modelUUID string, docType reflect.Type, name string) error {
+	col, closer := db.GetCollection(name)
+	defer closer()
+	infoSlicePtr := reflect.New(reflect.SliceOf(docType))
+
+	// models is a global collection so need to filter on UUID.
+	var filter bson.M
+	if name == modelsC {
+		filter = bson.M{"_id": modelUUID}
+	}
+	query := col.Find(filter)
+	// Units are ordered so we load the subordinates first.
+	if name == unitsC {
+		// Subordinates have a principal, so will sort after the
+		// empty string, which is what principal units have.
+		query = query.Sort("principal")
+	}
+	if err := query.All(infoSlicePtr.Interface()); err != nil {
+		return errors.Errorf("cannot get all %s: %v", name, err)
+	}
+	infos := infoSlicePtr.Elem()
+	for i := 0; i < infos.Len(); i++ {
+		info := infos.Index(i).Addr().Interface().(backingEntityDoc)
+		ctx.id = info.mongoID()
+		err := info.updated(ctx)
+		if err != nil {
+			return errors.Annotatef(err, "failed to initialise backing for %s:%v", name, ctx.id)
+		}
+	}
 	return nil
 }
 

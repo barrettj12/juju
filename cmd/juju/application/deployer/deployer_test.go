@@ -22,7 +22,7 @@ import (
 	"gopkg.in/macaroon.v2"
 
 	"github.com/juju/juju/api/base"
-	"github.com/juju/juju/api/client/resources/client"
+	"github.com/juju/juju/api/client/resources"
 	commoncharm "github.com/juju/juju/api/common/charm"
 	"github.com/juju/juju/cmd/juju/application/deployer/mocks"
 	"github.com/juju/juju/cmd/modelcmd"
@@ -152,6 +152,7 @@ func (s *deployerSuite) TestGetDeployerCharmStoreCharmWithRevision(c *gc.C) {
 func (s *deployerSuite) TestGetDeployerCharmHubCharmWithRevision(c *gc.C) {
 	cfg := s.channelDeployerConfig()
 	cfg.Revision = 42
+	cfg.Channel, _ = charm.ParseChannel("stable")
 	ch := charm.MustParseURL("ch:test-charm")
 	deployer, err := s.testGetDeployerRepositoryCharmWithRevision(c, ch, cfg)
 	c.Assert(err, jc.ErrorIsNil)
@@ -402,7 +403,7 @@ func (s *deployerSuite) TestMaybeReadLocalCharmErrorWithApplicationName(c *gc.C)
 	s.expectModelGet(c)
 
 	s.charmReader.EXPECT().ReadCharm("meshuggah").Return(s.charm, nil)
-	s.charm.EXPECT().Manifest().Return(&charm.Manifest{}).AnyTimes()
+	s.charm.EXPECT().Manifest().Return(nil).AnyTimes()
 	s.charm.EXPECT().Meta().Return(&charm.Meta{Series: []string{"focal"}}).AnyTimes()
 
 	f := &factory{
@@ -422,7 +423,7 @@ func (s *deployerSuite) TestMaybeReadLocalCharmErrorWithoutApplicationName(c *gc
 	s.expectModelGet(c)
 
 	s.charmReader.EXPECT().ReadCharm("meshuggah").Return(s.charm, nil)
-	s.charm.EXPECT().Manifest().Return(&charm.Manifest{}).AnyTimes()
+	s.charm.EXPECT().Manifest().Return(nil).AnyTimes()
 	s.charm.EXPECT().Meta().Return(&charm.Meta{Name: "meshuggah", Series: []string{"focal"}}).AnyTimes()
 
 	f := &factory{
@@ -450,7 +451,7 @@ func (s *deployerSuite) newDeployerFactory() DeployerFactory {
 	dep := DeployerDependencies{
 		DeployResources: func(
 			string,
-			client.CharmID,
+			resources.CharmID,
 			*macaroon.Macaroon,
 			map[string]string,
 			map[string]charmresource.Meta,

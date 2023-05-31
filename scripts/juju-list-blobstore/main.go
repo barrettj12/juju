@@ -115,10 +115,12 @@ func NewBlobStoreChecker() *BlobStoreChecker {
 	jujuDB := session.DB("juju")
 	managedResources := jujuDB.C(managedResourceC)
 	resources := jujuDB.C(resourceCatalogC)
+	systemState, err := statePool.SystemState()
+	checkErr(err, "pool is closed")
 	return &BlobStoreChecker{
 		pool:    statePool,
 		session: session,
-		system:  statePool.SystemState(),
+		system:  systemState,
 
 		managedResources: managedResources,
 		resources:        resources,
@@ -525,7 +527,6 @@ type ModelChecker struct {
 	foundBlobPaths set.Strings
 	session        *mgo.Session
 	model          *state.Model
-	system         *state.State
 
 	managedResources *mgo.Collection
 	resources        *mgo.Collection
@@ -611,8 +612,7 @@ func resourceDocID(modelUUID, resourceID string) string {
 // readApplicationsAndUnits figures out what CharmURLs are referenced by apps and units
 func (checker *ModelChecker) readApplicationsAndUnits() {
 	resourcesCollection := checker.session.DB("juju").C(resourcesC)
-	charmResources, err := checker.model.State().Resources()
-	checkErr(err, "resources")
+	charmResources := checker.model.State().Resources()
 	agentVersion, err := checker.model.AgentVersion()
 	checkErr(err, "model AgentVersion")
 	// Models track the desired version.Number, but Units track version.Binary
@@ -622,18 +622,16 @@ func (checker *ModelChecker) readApplicationsAndUnits() {
 	checkErr(err, "AllApplications")
 	for _, app := range apps {
 		charmURL, _ := app.CharmURL()
-		appCharmURLStr := charmURL.String()
-		checker.appReferencedCharms.Add(appCharmURLStr, app.Name())
+		checker.appReferencedCharms.Add(*charmURL, app.Name())
 		units, err := app.AllUnits()
 		checkErr(err, "AllUnits")
 		for _, unit := range units {
-			unitCharmURL, found := unit.CharmURL()
-			if !found {
+			unitCharmURL := unit.CharmURL()
+			if unitCharmURL == nil {
 				continue
 			}
-			unitString := unitCharmURL.String()
-			if unitString != appCharmURLStr {
-				checker.unitReferencedCharms.Add(unitString, unit.Name())
+			if *unitCharmURL != *charmURL {
+				checker.unitReferencedCharms.Add(*unitCharmURL, unit.Name())
 			}
 			tools, err := unit.AgentTools()
 			checkErr(err, "unit AgentTools")
@@ -990,8 +988,9 @@ var blobstoreFileFieldSelector = bson.M{"_id": 1, "filename": 1, "length": 1}
 // This should be called after checkUnreferencedResources, so that we have already
 // flagged every Blobstore.files object that has been referenced.
 // TODO: ideally we would have some way of giving a hint as to what the content is.
-//  We could consider looking at the first chunk for text content, or checking
-//  if the content is a .zip file, etc.
+//
+//	We could consider looking at the first chunk for text content, or checking
+//	if the content is a .zip file, etc.
 func (b *BlobStoreChecker) checkUnreferencedFiles() {
 	blobstoreDB := b.session.DB("blobstore")
 	blobFiles := blobstoreDB.C("blobstore.files")

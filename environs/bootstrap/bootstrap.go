@@ -447,7 +447,7 @@ func bootstrapIAAS(
 	} else {
 		// If no arch is specified as a constraint and we couldn't
 		// auto-discover the arch from the provider, we'll fall back
-		// to bootstrapping on on the same arch as the CLI client.
+		// to bootstrapping on the same arch as the CLI client.
 		bootstrapArch = localToolsArch()
 
 		// We no longer support controllers on i386. If we are
@@ -504,7 +504,10 @@ func bootstrapIAAS(
 		if err != nil {
 			return errors.Annotate(err, "cannot package bootstrap agent binary")
 		}
-		builtTools, err = args.BuildAgentTarball(args.BuildAgent, &forceVersion, cfg.AgentStream())
+		builtTools, err = args.BuildAgentTarball(
+			args.BuildAgent, cfg.AgentStream(),
+			func(version.Number) version.Number { return forceVersion },
+		)
 		if err != nil {
 			return errors.Annotate(err, "cannot package bootstrap agent binary")
 		}
@@ -581,6 +584,10 @@ func bootstrapIAAS(
 	if err != nil {
 		return errors.Trace(err)
 	}
+	base, err := series.GetBaseFromSeries(result.Series)
+	if err != nil {
+		return errors.Trace(err)
+	}
 
 	publicKey, err := userPublicSigningKey()
 	if err != nil {
@@ -590,7 +597,7 @@ func bootstrapIAAS(
 		args.ControllerConfig,
 		bootstrapParams.BootstrapConstraints,
 		args.ModelConstraints,
-		result.Series,
+		base,
 		publicKey,
 		args.ExtraAgentValuesForTesting,
 	)
@@ -720,7 +727,7 @@ func finalizeInstanceBootstrapConfig(
 	if icfg.APIInfo != nil {
 		return errors.New("machine configuration already has api info")
 	}
-	controllerCfg := icfg.Controller.Config
+	controllerCfg := icfg.ControllerConfig
 	caCert, hasCACert := controllerCfg.CACert()
 	if !hasCACert {
 		return errors.New("controller configuration has no ca-cert")
@@ -793,7 +800,7 @@ func finalizePodBootstrapConfig(
 		return errors.New("machine configuration already has api info")
 	}
 
-	controllerCfg := pcfg.Controller.Config
+	controllerCfg := pcfg.Controller
 	caCert, hasCACert := controllerCfg.CACert()
 	if !hasCACert {
 		return errors.New("controller configuration has no ca-cert")

@@ -84,9 +84,11 @@ type applicationDoc struct {
 	// be relatively straight forward, but very time consuming.
 	// When moving to CharmHub or removing CharmStore from Juju it should be
 	// tackled then.
-	CharmURL             *charm.URL   `bson:"charmurl"`
-	Channel              string       `bson:"cs-channel"`
-	CharmOrigin          *CharmOrigin `bson:"charm-origin"`
+	CharmURL    *string      `bson:"charmurl"`
+	Channel     string       `bson:"cs-channel"`
+	CharmOrigin *CharmOrigin `bson:"charm-origin"`
+	// CharmModifiedVersion changes will trigger the upgrade-charm hook
+	// for units independent of charm url changes.
 	CharmModifiedVersion int          `bson:"charmmodifiedversion"`
 	ForceCharm           bool         `bson:"forcecharm"`
 	Life                 Life         `bson:"life"`
@@ -106,14 +108,23 @@ type applicationDoc struct {
 	ExposedEndpoints map[string]ExposedEndpoint `bson:"exposed-endpoints,omitempty"`
 
 	// CAAS related attributes.
-	DesiredScale int    `bson:"scale"`
-	PasswordHash string `bson:"passwordhash"`
+	DesiredScale      int                           `bson:"scale"`
+	PasswordHash      string                        `bson:"passwordhash"`
+	ProvisioningState *ApplicationProvisioningState `bson:"provisioning-state"`
+
 	// Placement is the placement directive that should be used allocating units/pods.
 	Placement string `bson:"placement,omitempty"`
 	// HasResources is set to false after an application has been removed
 	// and any k8s cluster resources have been fully cleaned up.
 	// Until then, the application must not be removed from the Juju model.
 	HasResources bool `bson:"has-resources,omitempty"`
+}
+
+// ApplicationProvisioningState is the CAAS application provisioning state for an
+// application.
+type ApplicationProvisioningState struct {
+	Scaling     bool `bson:"scaling"`
+	ScaleTarget int  `bson:"scale-target"`
 }
 
 func newApplication(st *State, doc *applicationDoc) *Application {
@@ -162,8 +173,8 @@ func applicationGlobalOperatorKey(appName string) string {
 	return applicationGlobalKey(appName) + "#operator"
 }
 
-func applicationCharmConfigKey(appName string, curl *charm.URL) string {
-	return fmt.Sprintf("a#%s#%s", appName, curl)
+func applicationCharmConfigKey(appName string, curl *string) string {
+	return fmt.Sprintf("a#%s#%s", appName, *curl)
 }
 
 // charmConfigKey returns the charm-version-specific settings collection
@@ -182,8 +193,8 @@ func (a *Application) applicationConfigKey() string {
 	return applicationConfigKey(a.doc.Name)
 }
 
-func applicationStorageConstraintsKey(appName string, curl *charm.URL) string {
-	return fmt.Sprintf("asc#%s#%s", appName, curl)
+func applicationStorageConstraintsKey(appName string, curl *string) string {
+	return fmt.Sprintf("asc#%s#%s", appName, *curl)
 }
 
 // storageConstraintsKey returns the charm-version-specific storage
@@ -192,8 +203,8 @@ func (a *Application) storageConstraintsKey() string {
 	return applicationStorageConstraintsKey(a.doc.Name, a.doc.CharmURL)
 }
 
-func applicationDeviceConstraintsKey(appName string, curl *charm.URL) string {
-	return fmt.Sprintf("adc#%s#%s", appName, curl)
+func applicationDeviceConstraintsKey(appName string, curl *string) string {
+	return fmt.Sprintf("adc#%s#%s", appName, *curl)
 }
 
 // deviceConstraintsKey returns the charm-version-specific device
@@ -241,7 +252,60 @@ func (a *Application) SetAgentVersion(v version.Binary) (err error) {
 	}
 	a.doc.Tools = versionedTool
 	return nil
+}
 
+// SetProvisioningState sets the provisioning state for the application.
+func (a *Application) SetProvisioningState(ps ApplicationProvisioningState) error {
+	// TODO: Treat dying/dead scale to 0 as a separate call.
+	life := a.Life()
+	assertions := bson.D{
+		{"life", life},
+		{"provisioning-state", a.doc.ProvisioningState},
+	}
+	sets := bson.D{{"provisioning-state", ps}}
+	if ps.Scaling {
+		switch life {
+		case Alive:
+			alreadyScaling := false
+			if a.doc.ProvisioningState != nil && a.doc.ProvisioningState.Scaling {
+				alreadyScaling = true
+			}
+			if !alreadyScaling && ps.Scaling {
+				// if starting a scale, ensure we are scaling to the same target.
+				assertions = append(assertions, bson.DocElem{
+					"scale", ps.ScaleTarget,
+				})
+			}
+		case Dying, Dead:
+			// force scale to the scale target when dying/dead.
+			sets = append(sets, bson.DocElem{
+				"scale", ps.ScaleTarget,
+			})
+		}
+	}
+
+	ops := []txn.Op{{
+		C:      applicationsC,
+		Id:     a.doc.DocID,
+		Assert: assertions,
+		Update: bson.D{{"$set", sets}},
+	}}
+	if err := a.st.db().RunTransaction(ops); errors.Is(err, txn.ErrAborted) {
+		return stateerrors.ProvisioningStateInconsistent
+	} else if err != nil {
+		return errors.Annotatef(err, "failed to set provisioning-state for application %q", a)
+	}
+	a.doc.ProvisioningState = &ps
+	return nil
+}
+
+// ProvisioningState returns the provisioning state for the application.
+func (a *Application) ProvisioningState() *ApplicationProvisioningState {
+	if a.doc.ProvisioningState == nil {
+		return nil
+	}
+	ps := *a.doc.ProvisioningState
+	return &ps
 }
 
 var errRefresh = stderrors.New("state seems inconsistent, refresh and try again")
@@ -619,15 +683,8 @@ func (op *DestroyApplicationOperation) unassignBranchOps() ([]txn.Op, error) {
 }
 
 func removeResourcesOps(st *State, applicationID string) ([]txn.Op, error) {
-	persist, err := st.ResourcesPersistence()
-	if errors.IsNotSupported(err) {
-		// Nothing to see here, move along.
-		return nil, nil
-	}
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	ops, err := persist.NewRemoveResourcesOps(applicationID)
+	resources := st.resources()
+	ops, err := resources.removeResourcesOps(applicationID)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -903,10 +960,15 @@ func (a *Application) setExposed(exposed bool, exposedEndpoints map[string]Expos
 
 // Charm returns the application's charm and whether units should upgrade to that
 // charm even if they are in an error state.
-func (a *Application) Charm() (ch *Charm, force bool, err error) {
-	// We don't worry about the channel since we aren't interacting
-	// with the charm store here.
-	ch, err = a.st.Charm(a.doc.CharmURL)
+func (a *Application) Charm() (*Charm, bool, error) {
+	if a.doc.CharmURL == nil {
+		return nil, false, errors.NotFoundf("charm for application %q", a.doc.Name)
+	}
+	curl, err := charm.ParseURL(*a.doc.CharmURL)
+	if err != nil {
+		return nil, false, err
+	}
+	ch, err := a.st.Charm(curl)
 	if err != nil {
 		return nil, false, err
 	}
@@ -930,9 +992,10 @@ func (a *Application) CharmModifiedVersion() int {
 	return a.doc.CharmModifiedVersion
 }
 
-// CharmURL returns the application's charm URL, and whether units should upgrade
-// to the charm with that URL even if they are in an error state.
-func (a *Application) CharmURL() (curl *charm.URL, force bool) {
+// CharmURL returns a string version of the application's charm URL, and
+// whether units should upgrade to the charm with that URL even if they are
+// in an error state.
+func (a *Application) CharmURL() (*string, bool) {
 	return a.doc.CharmURL, a.doc.ForceCharm
 }
 
@@ -1158,7 +1221,6 @@ func (a *Application) changeCharmOps(
 	channel string,
 	updatedSettings charm.Settings,
 	forceUnits bool,
-	resourceIDs map[string]string,
 	updatedStorageConstraints map[string]StorageConstraints,
 ) ([]txn.Op, error) {
 	// Build the new application config from what can be used of the old one.
@@ -1177,9 +1239,10 @@ func (a *Application) changeCharmOps(
 		return nil, errors.Annotatef(err, "application %q", a.doc.Name)
 	}
 
+	cURL := ch.URL().String()
 	// Create or replace application settings.
 	var settingsOp txn.Op
-	newSettingsKey := applicationCharmConfigKey(a.doc.Name, ch.URL())
+	newSettingsKey := applicationCharmConfigKey(a.doc.Name, &cURL)
 	if _, err := readSettings(a.st.db(), settingsC, newSettingsKey); errors.IsNotFound(err) {
 		// No settings for this key yet, create it.
 		settingsOp = createSettingsOp(settingsC, newSettingsKey, newSettings)
@@ -1223,7 +1286,7 @@ func (a *Application) changeCharmOps(
 
 	// Add or create a reference to the new charm, settings,
 	// and storage constraints docs.
-	incOps, err := appCharmIncRefOps(a.st, a.doc.Name, ch.URL(), true)
+	incOps, err := appCharmIncRefOps(a.st, a.doc.Name, &cURL, true)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -1259,7 +1322,7 @@ func (a *Application) changeCharmOps(
 			C:  applicationsC,
 			Id: a.doc.DocID,
 			Update: bson.D{{"$set", bson.D{
-				{"charmurl", ch.URL()},
+				{"charmurl", cURL},
 				{"cs-channel", channel},
 				{"forcecharm", forceUnits},
 			}}},
@@ -1291,15 +1354,6 @@ func (a *Application) changeCharmOps(
 		return nil, errors.Trace(err)
 	}
 	ops = append(ops, addPeerOps...)
-
-	if len(resourceIDs) > 0 {
-		// Collect pending resource resolution operations.
-		resOps, err := a.resolveResourceOps(resourceIDs)
-		if err != nil {
-			return nil, errors.Trace(err)
-		}
-		ops = append(ops, resOps...)
-	}
 
 	// Update the relation count as well.
 	if len(newPeers) > 0 {
@@ -1422,7 +1476,8 @@ func (a *Application) newCharmStorageOps(
 	if err := validateStorageConstraints(sb, newStorageConstraints, ch.Meta()); err != nil {
 		return fail(errors.Annotate(err, "validating storage constraints"))
 	}
-	newStorageConstraintsKey := applicationStorageConstraintsKey(a.doc.Name, ch.URL())
+	cURL := ch.URL().String()
+	newStorageConstraintsKey := applicationStorageConstraintsKey(a.doc.Name, &cURL)
 	if _, err := readStorageConstraints(sb.mb, newStorageConstraintsKey); errors.IsNotFound(err) {
 		storageConstraintsOp = createStorageConstraintsOp(
 			newStorageConstraintsKey, newStorageConstraints,
@@ -1491,13 +1546,10 @@ func incCharmModifiedVersionOps(applicationID string) []txn.Op {
 	}}
 }
 
-func (a *Application) resolveResourceOps(resourceIDs map[string]string) ([]txn.Op, error) {
+func (a *Application) resolveResourceOps(pendingResourceIDs map[string]string) ([]txn.Op, error) {
 	// Collect pending resource resolution operations.
-	resources, err := a.st.Resources()
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	return resources.NewResolvePendingResourcesOps(a.doc.Name, resourceIDs)
+	resources := a.st.Resources().(*resourcePersistence)
+	return resources.resolveApplicationPendingResourcesOps(a.doc.Name, pendingResourceIDs)
 }
 
 // SetCharmConfig contains the parameters for Application.SetCharm.
@@ -1532,9 +1584,9 @@ type SetCharmConfig struct {
 	// profile doesn't validate.
 	Force bool
 
-	// ResourceIDs is a map of resource names to resource IDs to activate during
+	// PendingResourceIDs is a map of resource names to resource IDs to activate during
 	// the upgrade.
-	ResourceIDs map[string]string
+	PendingResourceIDs map[string]string
 
 	// StorageConstraints contains the storage constraints to add or update when
 	// upgrading the charm.
@@ -1557,7 +1609,11 @@ func (a *Application) SetCharm(cfg SetCharmConfig) (err error) {
 	if cfg.Charm.Meta().Subordinate != a.doc.Subordinate {
 		return errors.Errorf("cannot change an application's subordinacy")
 	}
-	currentCharm, err := a.st.Charm(a.doc.CharmURL)
+	curl, err := charm.ParseURL(*a.doc.CharmURL)
+	if err != nil {
+		return errors.Annotate(err, "parsing charm url")
+	}
+	currentCharm, err := a.st.Charm(curl)
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -1633,16 +1689,25 @@ func (a *Application) SetCharm(cfg SetCharmConfig) (err error) {
 			}),
 		}}
 
-		if a.doc.CharmURL.String() == cfg.Charm.URL().String() {
+		if *a.doc.CharmURL == cfg.Charm.URL().String() {
+			updates := bson.D{
+				{"cs-channel", channel},
+				{"forcecharm", cfg.ForceUnits},
+			}
+			// Local charms will not have a channel in their charm origin
+			// TODO: (hml) 2023-02-03
+			// With juju 3.0, SetCharm should always have a CharmOrigin.
+			// Compatibility with the Update application facade method
+			// is no longer necessary.
+			if cfg.CharmOrigin != nil && cfg.CharmOrigin.Channel != nil {
+				updates = append(updates, bson.DocElem{"charm-origin.channel", cfg.CharmOrigin.Channel})
+			}
 			// Charm URL already set; just update the force flag and channel.
 			ops = append(ops, txn.Op{
 				C:      applicationsC,
 				Id:     a.doc.DocID,
 				Assert: txn.DocExists,
-				Update: bson.D{{"$set", bson.D{
-					{"cs-channel", channel},
-					{"forcecharm", cfg.ForceUnits},
-				}}},
+				Update: bson.D{{"$set", updates}},
 			})
 		} else {
 			// Check if the new charm specifies a relation max limit
@@ -1663,7 +1728,6 @@ func (a *Application) SetCharm(cfg SetCharmConfig) (err error) {
 				channel,
 				updatedSettings,
 				cfg.ForceUnits,
-				cfg.ResourceIDs,
 				cfg.StorageConstraints,
 			)
 			if err != nil {
@@ -1673,6 +1737,23 @@ func (a *Application) SetCharm(cfg SetCharmConfig) (err error) {
 			newCharmModifiedVersion++
 		}
 
+		// Resources can be upgraded independent of a charm upgrade.
+		resourceOps, err := a.resolveResourceOps(cfg.PendingResourceIDs)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		ops = append(ops, resourceOps...)
+		// Only update newCharmModifiedVersion once. It might have been
+		// incremented in charmCharmOps.
+		if len(resourceOps) > 0 && newCharmModifiedVersion == a.doc.CharmModifiedVersion {
+			ops = append(ops, incCharmModifiedVersionOps(a.doc.DocID)...)
+			newCharmModifiedVersion++
+		}
+
+		// TODO: (hml) 2023-02-03
+		// With juju 3.0, SetCharm should always have a CharmOrigin.
+		// Compatibility with the Update application facade method
+		// is no longer necessary. Modify checks appropriately.
 		if cfg.CharmOrigin != nil {
 			// Update in the application facade also calls
 			// SetCharm, though it has no current user in the
@@ -1717,14 +1798,14 @@ func (a *Application) SetCharm(cfg SetCharmConfig) (err error) {
 			// ErrNoOperations on the other hand means there's nothing to update.
 			return nil, errors.Trace(err)
 		}
-
 		return ops, nil
 	}
 
 	if err := a.st.db().Run(buildTxn); err != nil {
 		return err
 	}
-	a.doc.CharmURL = cfg.Charm.URL()
+	cURL := cfg.Charm.URL().String()
+	a.doc.CharmURL = &cURL
 	a.doc.Channel = channel
 	a.doc.ForceCharm = cfg.ForceUnits
 	a.doc.CharmModifiedVersion = newCharmModifiedVersion
@@ -2238,6 +2319,7 @@ func (a *Application) addUnitOps(
 		address:            args.Address,
 		ports:              args.Ports,
 		unitName:           args.UnitName,
+		passwordHash:       args.PasswordHash,
 	})
 	if err != nil {
 		return uNames, ops, errors.Trace(err)
@@ -2257,10 +2339,11 @@ type applicationAddUnitOpsArgs struct {
 	attachStorage []names.StorageTag
 
 	// These optional attributes are relevant to CAAS models.
-	providerId *string
-	address    *string
-	ports      *[]string
-	unitName   *string
+	providerId   *string
+	address      *string
+	ports        *[]string
+	unitName     *string
+	passwordHash *string
 }
 
 // addUnitOpsWithCons is a helper method for returning addUnitOps.
@@ -2305,6 +2388,9 @@ func (a *Application) addUnitOpsWithCons(args applicationAddUnitOpsArgs) (string
 		Principal:              args.principalName,
 		MachineId:              args.principalMachineID,
 		StorageAttachmentCount: numStorageAttachments,
+	}
+	if args.passwordHash != nil {
+		udoc.PasswordHash = *args.passwordHash
 	}
 	now := a.st.clock().Now()
 	agentStatusDoc := statusDoc{
@@ -2499,6 +2585,17 @@ func incApplicationOffersRefOp(mb modelBackend, appName string) (txn.Op, error) 
 	return incRefOp, errors.Trace(err)
 }
 
+// newApplicationOffersRefOp returns a txn.Op that creates a new reference
+// count for an application offer, starting at the count supplied. Used in
+// model migration, where offers are created in bulk.
+func newApplicationOffersRefOp(mb modelBackend, appName string, startCount int) (txn.Op, error) {
+	refcounts, closer := mb.db().GetCollection(refcountsC)
+	defer closer()
+	offerRefCountKey := applicationOffersRefCountKey(appName)
+	incRefOp, err := nsRefcounts.CreateOrIncRefOp(refcounts, offerRefCountKey, startCount)
+	return incRefOp, errors.Trace(err)
+}
+
 // countApplicationOffersRefOp returns the number of offers for an application,
 // along with a txn.Op that ensures that that does not change.
 func countApplicationOffersRefOp(mb modelBackend, appName string) (txn.Op, int, error) {
@@ -2556,6 +2653,9 @@ type AddUnitParams struct {
 	// machineID is only passed in if the unit being created is
 	// a subordinate and refers to the machine that is hosting the principal.
 	machineID string
+
+	// PasswordHash is only passed for CAAS sidecar units on creation.
+	PasswordHash *string
 }
 
 // AddUnit adds a new principal unit to the application.
@@ -2577,6 +2677,157 @@ func (a *Application) AddUnit(args AddUnitParams) (unit *Unit, err error) {
 		return nil, err
 	}
 	return a.st.Unit(name)
+}
+
+// UpsertCAASUnitParams is passed to UpsertCAASUnit to describe how to create or how to find and
+// update an existing unit for sidecar CAAS application.
+type UpsertCAASUnitParams struct {
+	AddUnitParams
+
+	// OrderedScale is always true. It represents a mapping of OrderedId to Unit ID.
+	OrderedScale bool
+	// OrderedId is the stable ordinal index of the "pod".
+	OrderedId int
+
+	// ObservedAttachedVolumeIDs is the filesystem attachments observed to be attached by the infrastructure,
+	// used to map existing attachments.
+	ObservedAttachedVolumeIDs []string
+}
+
+func (a *Application) UpsertCAASUnit(args UpsertCAASUnitParams) (*Unit, error) {
+	if args.PasswordHash == nil {
+		return nil, errors.NotValidf("password hash")
+	}
+	if args.ProviderId == nil {
+		return nil, errors.NotValidf("provider id")
+	}
+	if !args.OrderedScale {
+		return nil, errors.NewNotImplemented(nil, "upserting CAAS units not supported without ordered unit IDs")
+	}
+	if args.UnitName == nil {
+		return nil, errors.NotValidf("nil unit name")
+	}
+
+	sb, err := NewStorageBackend(a.st)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	var unit *Unit
+	err = a.st.db().Run(func(attempt int) ([]txn.Op, error) {
+		if attempt > 0 {
+			err := a.Refresh()
+			if err != nil {
+				return nil, errors.Trace(err)
+			}
+		}
+
+		if args.UnitName != nil {
+			var err error
+			if unit == nil {
+				unit, err = a.st.Unit(*args.UnitName)
+			} else {
+				err = unit.Refresh()
+			}
+			if errors.Is(err, errors.NotFound) {
+				unit = nil
+			} else if err != nil {
+				return nil, errors.Trace(err)
+			}
+		}
+
+		// Try to reattach the storage that k8s has observed attached to this pod.
+		for _, volumeId := range args.ObservedAttachedVolumeIDs {
+			volume, err := sb.volume(bson.D{{"info.volumeid", volumeId}}, "")
+			if errors.Is(err, errors.NotFound) {
+				continue
+			} else if err != nil {
+				return nil, errors.Trace(err)
+			}
+
+			volumeStorageId, err := volume.StorageInstance()
+			if errors.Is(err, errors.NotAssigned) {
+				continue
+			} else if err != nil {
+				return nil, errors.Trace(err)
+			}
+
+			args.AddUnitParams.AttachStorage = append(args.AddUnitParams.AttachStorage, volumeStorageId)
+		}
+
+		if unit == nil {
+			return a.insertCAASUnitOps(args)
+		}
+
+		if unit.Life() == Dead {
+			return nil, errors.AlreadyExistsf("dead unit %q", unit.Tag().Id())
+		}
+
+		updateOps, err := unit.UpdateOperation(UnitUpdateProperties{
+			ProviderId: args.ProviderId,
+			Address:    args.Address,
+			Ports:      args.Ports,
+		}).Build(attempt)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+
+		var ops []txn.Op
+		if args.PasswordHash != nil {
+			ops = append(ops, unit.setPasswordHashOps(*args.PasswordHash)...) // setPasswordHashOps asserts notDead
+		} else {
+			ops = append(ops, txn.Op{
+				C:      unitsC,
+				Id:     unit.doc.DocID,
+				Assert: notDeadDoc,
+			})
+		}
+		ops = append(ops, updateOps...)
+		return ops, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if unit == nil {
+		unit, err = a.st.Unit(*args.UnitName)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		err = unit.Refresh()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return unit, nil
+}
+
+func (a *Application) insertCAASUnitOps(args UpsertCAASUnitParams) ([]txn.Op, error) {
+	if args.UnitName == nil {
+		return nil, errors.NotValidf("nil unit name")
+	}
+
+	if ps := a.ProvisioningState(); args.OrderedId >= a.GetScale() ||
+		(ps != nil && ps.Scaling && args.OrderedId >= ps.ScaleTarget) {
+		return nil, errors.NotAssignedf("unrequired unit %s is", *args.UnitName)
+	}
+
+	_, addOps, err := a.addUnitOps("", args.AddUnitParams, nil)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	ops := []txn.Op{{
+		C:  applicationsC,
+		Id: a.doc.DocID,
+		Assert: bson.D{
+			{"life", Alive},
+			{"scale", a.GetScale()},
+			{"provisioning-state", a.ProvisioningState()},
+		},
+	}}
+	ops = append(ops, addOps...)
+	return ops, nil
 }
 
 // removeUnitOps returns the operations necessary to remove the supplied unit,
@@ -2652,7 +2903,8 @@ func (a *Application) removeUnitOps(u *Unit, asserts bson.D, op *ForcedOperation
 	if u.doc.CharmURL != nil {
 		// If the unit has a different URL to the application, allow any final
 		// cleanup to happen; otherwise we just do it when the app itself is removed.
-		maybeDoFinal := u.doc.CharmURL != a.doc.CharmURL
+		maybeDoFinal := *u.doc.CharmURL != *a.doc.CharmURL
+
 		// When 'force' is set, this call will return both needed operations
 		// as well as all operational errors encountered.
 		// If the 'force' is not set, any error will be fatal and no operations will be returned.
@@ -2685,15 +2937,8 @@ func (a *Application) removeUnitOps(u *Unit, asserts bson.D, op *ForcedOperation
 }
 
 func removeUnitResourcesOps(st *State, unitID string) ([]txn.Op, error) {
-	persist, err := st.ResourcesPersistence()
-	if errors.IsNotSupported(err) {
-		// Nothing to see here, move along.
-		return nil, nil
-	}
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	ops, err := persist.NewRemoveUnitResourcesOps(unitID)
+	resources := st.resources()
+	ops, err := resources.removeUnitResourcesOps(unitID)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -2738,16 +2983,37 @@ func allUnits(st *State, application string) (units []*Unit, err error) {
 
 // Relations returns a Relation for every relation the application is in.
 func (a *Application) Relations() (relations []*Relation, err error) {
-	return applicationRelations(a.st, a.doc.Name)
+	return matchingRelations(a.st, a.doc.Name)
 }
 
-func applicationRelations(st *State, name string) (relations []*Relation, err error) {
-	defer errors.DeferredAnnotatef(&err, "can't get relations for application %q", name)
+// matchingRelations returns all relations matching the application(s)/endpoint(s) provided
+// There must be 1 or 2 supplied names, of the form <application>[:<relation>]
+func matchingRelations(st *State, names ...string) (relations []*Relation, err error) {
+	defer errors.DeferredAnnotatef(&err, "can't get relations matching %q", strings.Join(names, " "))
 	relationsCollection, closer := st.db().GetCollection(relationsC)
 	defer closer()
 
+	var conditions []bson.D
+	for _, name := range names {
+		appName, relName, err := splitEndpointName(name)
+		if err != nil {
+			return nil, err
+		}
+		if relName == "" {
+			conditions = append(conditions, bson.D{{"endpoints.applicationname", appName}})
+		} else {
+			conditions = append(conditions, bson.D{{"endpoints", bson.D{{"$elemMatch", bson.D{
+				{"applicationname", appName},
+				{"relation.name", relName},
+			}}}}})
+		}
+	}
+
 	docs := []relationDoc{}
-	err = relationsCollection.Find(bson.D{{"endpoints.applicationname", name}}).All(&docs)
+	err = relationsCollection.Find(bson.D{{
+		"$and", conditions,
+	}}).All(&docs)
+
 	if err != nil {
 		return nil, err
 	}
@@ -2767,13 +3033,17 @@ func (a *Application) CharmConfig(branchName string) (charm.Settings, error) {
 	return s, errors.Annotatef(err, "charm config for application %q", a.doc.Name)
 }
 
-func charmSettingsWithDefaults(st *State, cURL *charm.URL, appName, branchName string) (charm.Settings, error) {
+func charmSettingsWithDefaults(st *State, cURL *string, appName, branchName string) (charm.Settings, error) {
 	cfg, err := branchCharmSettings(st, cURL, appName, branchName)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
 
-	ch, err := st.Charm(cURL)
+	charmURL, err := charm.ParseURL(*cURL)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	ch, err := st.Charm(charmURL)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -2785,7 +3055,7 @@ func charmSettingsWithDefaults(st *State, cURL *charm.URL, appName, branchName s
 	return result, nil
 }
 
-func branchCharmSettings(st *State, cURL *charm.URL, appName, branchName string) (*Settings, error) {
+func branchCharmSettings(st *State, cURL *string, appName, branchName string) (*Settings, error) {
 	key := applicationCharmConfigKey(appName, cURL)
 	cfg, err := readSettings(st.db(), settingsC, key)
 	if err != nil {
@@ -3256,7 +3526,7 @@ func (a *Application) UnitStatuses() (map[string]status.StatusInfo, error) {
 	defer closer()
 	// Agent status is u#unit-name
 	// Workload status is u#unit-name#charm
-	selector := fmt.Sprintf("^%s:u#%s/\\d+(#charm)?$", a.st.modelUUID(), a.doc.Name)
+	selector := fmt.Sprintf("^%s:u#%s/\\d+(#charm)?$", a.st.ModelUUID(), a.doc.Name)
 	var docs []statusDocWithID
 	err := col.Find(bson.M{"_id": bson.M{"$regex": selector}}).All(&docs)
 	if err != nil {

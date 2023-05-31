@@ -5,7 +5,7 @@ package lxd_test
 
 import (
 	"encoding/base64"
-	"net"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -36,6 +36,8 @@ type credentialsSuite struct {
 
 var _ = gc.Suite(&credentialsSuite{})
 
+var errNotFound = api.StatusErrorf(http.StatusNotFound, "")
+
 func (s *credentialsSuite) TestCredentialSchemas(c *gc.C) {
 	provider := lxd.NewProvider()
 	envtesting.AssertProviderAuthTypes(c, provider, "certificate", "interactive")
@@ -48,7 +50,6 @@ type credentialsSuiteDeps struct {
 	serverFactory  *lxd.MockServerFactory
 	certReadWriter *lxd.MockCertificateReadWriter
 	certGenerator  *lxd.MockCertificateGenerator
-	netLookup      *lxd.MockNetLookup
 	configReader   *lxd.MockLXCConfigReader
 }
 
@@ -59,12 +60,10 @@ func (s *credentialsSuite) createProvider(ctrl *gomock.Controller) credentialsSu
 
 	certReadWriter := lxd.NewMockCertificateReadWriter(ctrl)
 	certGenerator := lxd.NewMockCertificateGenerator(ctrl)
-	lookup := lxd.NewMockNetLookup(ctrl)
 	configReader := lxd.NewMockLXCConfigReader(ctrl)
 	creds := lxd.NewProviderCredentials(
 		certReadWriter,
 		certGenerator,
-		lookup,
 		factory,
 		configReader,
 	)
@@ -78,7 +77,6 @@ func (s *credentialsSuite) createProvider(ctrl *gomock.Controller) credentialsSu
 		serverFactory:  factory,
 		certReadWriter: certReadWriter,
 		certGenerator:  certGenerator,
-		netLookup:      lookup,
 		configReader:   configReader,
 	}
 }
@@ -491,14 +489,7 @@ func (s *credentialsSuite) TestFinalizeCredentialLocal(c *gc.C) {
 	deps.server.EXPECT().GetCertificate(s.clientCertFingerprint(c)).Return(nil, "", nil)
 	deps.server.EXPECT().ServerCertificate().Return("server-cert")
 
-	localhostIP := net.IPv4(127, 0, 0, 1)
-	ipNet := &net.IPNet{IP: localhostIP, Mask: localhostIP.DefaultMask()}
-
-	deps.netLookup.EXPECT().LookupHost("localhost").Return([]string{"127.0.0.1"}, nil)
-	deps.netLookup.EXPECT().InterfaceAddrs().Return([]net.Addr{ipNet}, nil)
-
 	out, err := deps.provider.FinalizeCredential(cmdtesting.Context(c), environs.FinalizeCredentialParams{
-		CloudEndpoint: "localhost",
 		Credential: cloud.NewCredential(cloud.CertificateAuthType, map[string]string{
 			"client-cert": coretesting.CACert,
 			"client-key":  coretesting.CAKey,
@@ -524,7 +515,6 @@ func (s *credentialsSuite) TestFinalizeCredentialLocalAddCert(c *gc.C) {
 	deps.server.EXPECT().ServerCertificate().Return("server-cert")
 
 	out, err := deps.provider.FinalizeCredential(cmdtesting.Context(c), environs.FinalizeCredentialParams{
-		CloudEndpoint: "",
 		Credential: cloud.NewCredential(cloud.CertificateAuthType, map[string]string{
 			"client-cert": coretesting.CACert,
 			"client-key":  coretesting.CAKey,
@@ -551,14 +541,13 @@ func (s *credentialsSuite) TestFinalizeCredentialLocalAddCertAlreadyExists(c *gc
 	deps := s.createProvider(ctrl)
 
 	gomock.InOrder(
-		deps.server.EXPECT().GetCertificate(s.clientCertFingerprint(c)).Return(nil, "", errors.New("not found")),
+		deps.server.EXPECT().GetCertificate(s.clientCertFingerprint(c)).Return(nil, "", errNotFound),
 		deps.server.EXPECT().CreateClientCertificate(s.clientCert()).Return(errors.New("UNIQUE constraint failed: interactives.fingerprint")),
 		deps.server.EXPECT().GetCertificate(s.clientCertFingerprint(c)).Return(nil, "", nil),
 		deps.server.EXPECT().ServerCertificate().Return("server-cert"),
 	)
 
 	out, err := deps.provider.FinalizeCredential(cmdtesting.Context(c), environs.FinalizeCredentialParams{
-		CloudEndpoint: "",
 		Credential: cloud.NewCredential(cloud.CertificateAuthType, map[string]string{
 			"client-cert": coretesting.CACert,
 			"client-key":  coretesting.CAKey,
@@ -585,13 +574,12 @@ func (s *credentialsSuite) TestFinalizeCredentialLocalAddCertFatal(c *gc.C) {
 	deps := s.createProvider(ctrl)
 
 	gomock.InOrder(
-		deps.server.EXPECT().GetCertificate(s.clientCertFingerprint(c)).Return(nil, "", errors.New("not found")),
+		deps.server.EXPECT().GetCertificate(s.clientCertFingerprint(c)).Return(nil, "", errNotFound),
 		deps.server.EXPECT().CreateClientCertificate(s.clientCert()).Return(errors.New("UNIQUE constraint failed: interactives.fingerprint")),
-		deps.server.EXPECT().GetCertificate(s.clientCertFingerprint(c)).Return(nil, "", errors.New("not found")),
+		deps.server.EXPECT().GetCertificate(s.clientCertFingerprint(c)).Return(nil, "", errNotFound),
 	)
 
 	_, err := deps.provider.FinalizeCredential(cmdtesting.Context(c), environs.FinalizeCredentialParams{
-		CloudEndpoint: "",
 		Credential: cloud.NewCredential(cloud.CertificateAuthType, map[string]string{
 			"client-cert": coretesting.CACert,
 			"client-key":  coretesting.CAKey,
@@ -630,27 +618,44 @@ func (s *credentialsSuite) TestFinalizeCredentialLocalCertificateWithEmptyClient
 	c.Assert(err, gc.ErrorMatches, `missing or empty "client-key" attribute not valid`)
 }
 
-func (s *credentialsSuite) TestFinalizeCredentialLocalCertificate(c *gc.C) {
+func (s *credentialsSuite) TestFinalizeCredentialWithNonServerAuth(c *gc.C) {
 	ctrl := gomock.NewController(c)
 	defer ctrl.Finish()
 
 	deps := s.createProvider(ctrl)
 
 	ctx := cmdtesting.Context(c)
-	out, err := deps.provider.FinalizeCredential(ctx, environs.FinalizeCredentialParams{
+	_, err := deps.provider.FinalizeCredential(ctx, environs.FinalizeCredentialParams{
 		CloudEndpoint: "localhost",
 		Credential: cloud.NewCredential("certificate", map[string]string{
-			"client-cert": "/path/to/client/cert.crt",
-			"client-key":  "/path/to/client/key.key",
-			"server-cert": "server-cert",
+			"server-cert": coretesting.CACert,
+			"client-cert": coretesting.CACert,
+		}),
+	})
+	c.Assert(err, gc.ErrorMatches, `missing or empty "client-key" attribute not valid`)
+}
+
+func (s *credentialsSuite) TestFinalizeCredentialLocalCertificate(c *gc.C) {
+	ctrl := gomock.NewController(c)
+	defer ctrl.Finish()
+
+	deps := s.createProvider(ctrl)
+	deps.server.EXPECT().GetCertificate(s.clientCertFingerprint(c)).Return(nil, "", nil)
+	deps.server.EXPECT().ServerCertificate().Return("server-cert")
+
+	ctx := cmdtesting.Context(c)
+	out, err := deps.provider.FinalizeCredential(ctx, environs.FinalizeCredentialParams{
+		Credential: cloud.NewCredential("certificate", map[string]string{
+			"client-cert": coretesting.CACert,
+			"client-key":  coretesting.CAKey,
 		}),
 	})
 	c.Assert(err, jc.ErrorIsNil)
 
 	c.Assert(out.AuthType(), gc.Equals, cloud.AuthType("certificate"))
 	c.Assert(out.Attributes(), jc.DeepEquals, map[string]string{
-		"client-cert": "/path/to/client/cert.crt",
-		"client-key":  "/path/to/client/key.key",
+		"client-cert": coretesting.CACert,
+		"client-key":  coretesting.CAKey,
 		"server-cert": "server-cert",
 	})
 }
@@ -705,17 +710,15 @@ func (s *credentialsSuite) TestFinalizeCredentialNonLocal(c *gc.C) {
 	fingerprint, err := clientCert.Fingerprint()
 	c.Assert(err, jc.ErrorIsNil)
 
-	deps.netLookup.EXPECT().LookupHost("8.8.8.8").Return([]string{}, nil)
-	deps.netLookup.EXPECT().InterfaceAddrs().Return([]net.Addr{}, nil)
 	deps.serverFactory.EXPECT().InsecureRemoteServer(insecureSpec).Return(deps.server, nil)
-	deps.server.EXPECT().GetCertificate(fingerprint).Return(nil, "", errors.New("not found"))
+	deps.server.EXPECT().GetCertificate(fingerprint).Return(nil, "", errNotFound)
 	deps.server.EXPECT().CreateCertificate(api.CertificatesPost{
 		CertificatePut: api.CertificatePut{
-			Name: insecureCred.Label,
-			Type: "client",
+			Name:        insecureCred.Label,
+			Type:        "client",
+			Certificate: clientX509Base64,
 		},
-		Certificate: clientX509Base64,
-		Password:    "fred",
+		Password: "fred",
 	}).Return(nil)
 	deps.server.EXPECT().GetServer().Return(&api.Server{
 		Environment: api.ServerEnvironment{
@@ -768,8 +771,6 @@ func (s *credentialsSuite) TestFinalizeCredentialNonLocalWithCertAlreadyExists(c
 	fingerprint, err := clientCert.Fingerprint()
 	c.Assert(err, jc.ErrorIsNil)
 
-	deps.netLookup.EXPECT().LookupHost("8.8.8.8").Return([]string{}, nil)
-	deps.netLookup.EXPECT().InterfaceAddrs().Return([]net.Addr{}, nil)
 	deps.serverFactory.EXPECT().InsecureRemoteServer(insecureSpec).Return(deps.server, nil)
 	deps.server.EXPECT().GetCertificate(fingerprint).Return(&api.Certificate{}, "", nil)
 	deps.server.EXPECT().GetServer().Return(&api.Server{
@@ -811,8 +812,6 @@ func (s *credentialsSuite) TestFinalizeCredentialRemoteWithInsecureError(c *gc.C
 		Credential:    insecureCred,
 	}
 
-	deps.netLookup.EXPECT().LookupHost("8.8.8.8").Return([]string{}, nil)
-	deps.netLookup.EXPECT().InterfaceAddrs().Return([]net.Addr{}, nil)
 	deps.serverFactory.EXPECT().InsecureRemoteServer(insecureSpec).Return(nil, errors.New("bad"))
 
 	_, err := deps.provider.FinalizeCredential(cmdtesting.Context(c), params)
@@ -845,17 +844,15 @@ func (s *credentialsSuite) TestFinalizeCredentialRemoteWithCreateCertificateErro
 	fingerprint, err := clientCert.Fingerprint()
 	c.Assert(err, jc.ErrorIsNil)
 
-	deps.netLookup.EXPECT().LookupHost("8.8.8.8").Return([]string{}, nil)
-	deps.netLookup.EXPECT().InterfaceAddrs().Return([]net.Addr{}, nil)
 	deps.serverFactory.EXPECT().InsecureRemoteServer(insecureSpec).Return(deps.server, nil)
-	deps.server.EXPECT().GetCertificate(fingerprint).Return(nil, "", errors.New("not found"))
+	deps.server.EXPECT().GetCertificate(fingerprint).Return(nil, "", errNotFound)
 	deps.server.EXPECT().CreateCertificate(api.CertificatesPost{
 		CertificatePut: api.CertificatePut{
-			Name: insecureCred.Label,
-			Type: "client",
+			Name:        insecureCred.Label,
+			Type:        "client",
+			Certificate: clientX509Base64,
 		},
-		Certificate: clientX509Base64,
-		Password:    "fred",
+		Password: "fred",
 	}).Return(errors.New("bad"))
 
 	_, err = deps.provider.FinalizeCredential(cmdtesting.Context(c), params)
@@ -888,17 +885,15 @@ func (s *credentialsSuite) TestFinalizeCredentialRemoveWithGetServerError(c *gc.
 	fingerprint, err := clientCert.Fingerprint()
 	c.Assert(err, jc.ErrorIsNil)
 
-	deps.netLookup.EXPECT().LookupHost("8.8.8.8").Return([]string{}, nil)
-	deps.netLookup.EXPECT().InterfaceAddrs().Return([]net.Addr{}, nil)
 	deps.serverFactory.EXPECT().InsecureRemoteServer(insecureSpec).Return(deps.server, nil)
-	deps.server.EXPECT().GetCertificate(fingerprint).Return(nil, "", errors.New("not found"))
+	deps.server.EXPECT().GetCertificate(fingerprint).Return(nil, "", errNotFound)
 	deps.server.EXPECT().CreateCertificate(api.CertificatesPost{
 		CertificatePut: api.CertificatePut{
-			Name: insecureCred.Label,
-			Type: "client",
+			Name:        insecureCred.Label,
+			Type:        "client",
+			Certificate: clientX509Base64,
 		},
-		Certificate: clientX509Base64,
-		Password:    "fred",
+		Password: "fred",
 	}).Return(nil)
 	deps.server.EXPECT().GetServer().Return(nil, "etag", errors.New("bad"))
 
@@ -941,17 +936,15 @@ func (s *credentialsSuite) TestFinalizeCredentialRemoteWithNewRemoteServerError(
 	fingerprint, err := clientCert.Fingerprint()
 	c.Assert(err, jc.ErrorIsNil)
 
-	deps.netLookup.EXPECT().LookupHost("8.8.8.8").Return([]string{}, nil)
-	deps.netLookup.EXPECT().InterfaceAddrs().Return([]net.Addr{}, nil)
 	deps.serverFactory.EXPECT().InsecureRemoteServer(insecureSpec).Return(deps.server, nil)
-	deps.server.EXPECT().GetCertificate(fingerprint).Return(nil, "", errors.New("not found"))
+	deps.server.EXPECT().GetCertificate(fingerprint).Return(nil, "", errNotFound)
 	deps.server.EXPECT().CreateCertificate(api.CertificatesPost{
 		CertificatePut: api.CertificatePut{
-			Name: insecureCred.Label,
-			Type: "client",
+			Name:        insecureCred.Label,
+			Type:        "client",
+			Certificate: clientX509Base64,
 		},
-		Certificate: clientX509Base64,
-		Password:    "fred",
+		Password: "fred",
 	}).Return(nil)
 	deps.server.EXPECT().GetServer().Return(&api.Server{
 		Environment: api.ServerEnvironment{
@@ -969,9 +962,10 @@ func (s *credentialsSuite) TestInteractiveFinalizeCredentialWithValidCredentials
 	defer ctrl.Finish()
 
 	deps := s.createProvider(ctrl)
+	deps.server.EXPECT().GetCertificate(s.clientCertFingerprint(c)).Return(nil, "", nil)
+	deps.server.EXPECT().ServerCertificate().Return("server-cert")
 
 	out, err := deps.provider.FinalizeCredential(cmdtesting.Context(c), environs.FinalizeCredentialParams{
-		CloudEndpoint: "localhost",
 		Credential: cloud.NewCredential("interactive", map[string]string{
 			"client-cert": coretesting.CACert,
 			"client-key":  coretesting.CAKey,
@@ -980,7 +974,7 @@ func (s *credentialsSuite) TestInteractiveFinalizeCredentialWithValidCredentials
 	})
 	c.Assert(err, jc.ErrorIsNil)
 
-	c.Assert(out.AuthType(), gc.Equals, cloud.AuthType("interactive"))
+	c.Assert(out.AuthType(), gc.Equals, cloud.AuthType("certificate"))
 	c.Assert(out.Attributes(), jc.DeepEquals, map[string]string{
 		"client-cert": coretesting.CACert,
 		"client-key":  coretesting.CAKey,
@@ -1003,14 +997,7 @@ func (s *credentialsSuite) TestInteractiveFinalizeCredentialWithTrustPassword(c 
 	deps.server.EXPECT().GetCertificate(s.clientCertFingerprint(c)).Return(nil, "", nil)
 	deps.server.EXPECT().ServerCertificate().Return("server-cert")
 
-	localhostIP := net.IPv4(127, 0, 0, 1)
-	ipNet := &net.IPNet{IP: localhostIP, Mask: localhostIP.DefaultMask()}
-
-	deps.netLookup.EXPECT().LookupHost("localhost").Return([]string{"127.0.0.1"}, nil)
-	deps.netLookup.EXPECT().InterfaceAddrs().Return([]net.Addr{ipNet}, nil)
-
 	out, err := deps.provider.FinalizeCredential(cmdtesting.Context(c), environs.FinalizeCredentialParams{
-		CloudEndpoint: "localhost",
 		Credential: cloud.NewCredential("interactive", map[string]string{
 			"trust-password": "password1",
 		}),

@@ -101,6 +101,7 @@ func toCaaSStorageProvisioner(sc storage.StorageClass) *caas.StorageProvisioner 
 		Name:        sc.Name,
 		Provisioner: sc.Provisioner,
 		Parameters:  sc.Parameters,
+		IsDefault:   isDefaultStorageClass(sc),
 	}
 	if sc.VolumeBindingMode != nil {
 		caasSc.VolumeBindingMode = string(*sc.VolumeBindingMode)
@@ -253,6 +254,11 @@ func storageClassMatches(preferredStorage caas.PreferredStorage, storageProvisio
 	if storageProvisioner == nil || preferredStorage.Provisioner != storageProvisioner.Provisioner {
 		return &caas.NonPreferredStorageError{PreferredStorage: preferredStorage}
 	}
+
+	if preferredStorage.SupportsDefault && storageProvisioner.IsDefault {
+		return nil
+	}
+
 	for k, v := range preferredStorage.Parameters {
 		param, ok := storageProvisioner.Parameters[k]
 		if !ok || param != v {

@@ -5,6 +5,7 @@ package application
 
 import (
 	"fmt"
+	"runtime"
 
 	"github.com/juju/cmd/v3"
 	"github.com/juju/cmd/v3/cmdtesting"
@@ -25,6 +26,9 @@ type RemoveApplicationSuite struct {
 var _ = gc.Suite(&RemoveApplicationSuite{})
 
 func (s *RemoveApplicationSuite) SetUpTest(c *gc.C) {
+	if runtime.GOOS == "darwin" {
+		c.Skip("Mongo failures on macOS")
+	}
 	s.RepoSuite.SetUpTest(c)
 	s.CmdBlockHelper = testing.NewCmdBlockHelper(s.APIState)
 	c.Assert(s.CmdBlockHelper, gc.NotNil)
@@ -93,13 +97,13 @@ removing application storage-filesystem-multi-series
 }
 
 func (s *RemoveApplicationSuite) TestRemoveLocalMetered(c *gc.C) {
-	ch := testcharms.RepoWithSeries("bionic").CharmArchivePath(c.MkDir(), "metered-multi-series")
+	ch := testcharms.CharmRepo().CharmArchivePath(c.MkDir(), "metered")
 	deploy := NewDeployCommand()
 	_, err := cmdtesting.RunCommand(c, deploy, ch)
 	c.Assert(err, jc.ErrorIsNil)
-	_, err = runRemoveApplication(c, "metered-multi-series")
+	_, err = runRemoveApplication(c, "metered")
 	c.Assert(err, jc.ErrorIsNil)
-	multiSeries, err := s.State.Application("metered-multi-series")
+	multiSeries, err := s.State.Application("metered")
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(multiSeries.Life(), gc.Equals, state.Dying)
 }

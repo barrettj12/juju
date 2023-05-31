@@ -2,9 +2,6 @@
 // Copyright 2015 Cloudbase Solutions SRL
 // Licensed under the AGPLv3, see LICENCE file for details.
 
-// Package cloudinit implements a way of creating
-// a cloud-init configuration file.
-// See https://help.ubuntu.com/community/CloudInit.
 package cloudinit
 
 import (
@@ -16,6 +13,7 @@ import (
 	"github.com/juju/packaging/v2/config"
 	"github.com/juju/proxy"
 	"github.com/juju/utils/v3/shell"
+	"golang.org/x/crypto/ssh"
 
 	"github.com/juju/juju/core/os"
 	"github.com/juju/juju/core/series"
@@ -283,7 +281,7 @@ type SSHAuthorizedKeysConfig interface {
 // SSHKeysConfig is the interface for setting ssh host keys.
 type SSHKeysConfig interface {
 	// SetSSHKeys sets the SSH host keys for the machine.
-	SetSSHKeys(SSHKeys)
+	SetSSHKeys(SSHKeys) error
 }
 
 // RootUserConfig is the interface for all root user-related settings.
@@ -393,7 +391,7 @@ type User struct {
 	SSHAuthorizedKeys string
 
 	// Sudo directives to add.
-	Sudo []string
+	Sudo string
 }
 
 // UsersConfig is the interface for managing user additions
@@ -418,82 +416,75 @@ type NetworkingConfig interface {
 	AddNetworkConfig(interfaces corenetwork.InterfaceInfos) error
 }
 
+func WithDisableNetplanMACMatch(cfg *cloudConfig) {
+	cfg.omitNetplanHWAddrMatch = true
+}
+
 // New returns a new Config with no options set.
-func New(ser string) (CloudConfig, error) {
-	seriesos, err := series.GetOSFromSeries(ser)
+func New(ser string, opts ...func(*cloudConfig)) (CloudConfig, error) {
+	seriesOS, err := series.GetOSFromSeries(ser)
 	if err != nil {
-		return nil, err
+		return nil, errors.Trace(err)
 	}
-	switch seriesos {
+
+	cfg := &cloudConfig{
+		series: ser,
+		attrs:  make(map[string]interface{}),
+	}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	renderer := func(name string) shell.Renderer { r, _ := shell.NewRenderer(name); return r }
+
+	switch seriesOS {
 	case os.Windows:
-		renderer, _ := shell.NewRenderer("powershell")
-		return &windowsCloudConfig{
-			&cloudConfig{
-				series:   ser,
-				renderer: renderer,
-				attrs:    make(map[string]interface{}),
-			},
-		}, nil
+		cfg.renderer = renderer("powershell")
+		return &windowsCloudConfig{cfg}, nil
 	case os.Ubuntu:
-		renderer, _ := shell.NewRenderer("bash")
-		return &ubuntuCloudConfig{
-			&cloudConfig{
-				series: ser,
-				paccmder: map[jujupackaging.PackageManagerName]commands.PackageCommander{
-					jujupackaging.AptPackageManager:  commands.NewAptPackageCommander(),
-					jujupackaging.SnapPackageManager: commands.NewSnapPackageCommander(),
-				},
-				pacconfer: map[jujupackaging.PackageManagerName]config.PackagingConfigurer{
-					jujupackaging.AptPackageManager: config.NewAptPackagingConfigurer(ser),
-				},
-				renderer: renderer,
-				attrs:    make(map[string]interface{}),
-			},
-		}, nil
+		cfg.renderer = renderer("bash")
+		cfg.paccmder = map[jujupackaging.PackageManagerName]commands.PackageCommander{
+			jujupackaging.AptPackageManager:  commands.NewAptPackageCommander(),
+			jujupackaging.SnapPackageManager: commands.NewSnapPackageCommander(),
+		}
+		cfg.pacconfer = map[jujupackaging.PackageManagerName]config.PackagingConfigurer{
+			jujupackaging.AptPackageManager: config.NewAptPackagingConfigurer(ser),
+		}
+		return &ubuntuCloudConfig{cfg}, nil
 	case os.CentOS:
-		renderer, _ := shell.NewRenderer("bash")
+		cfg.renderer = renderer("bash")
+		cfg.paccmder = map[jujupackaging.PackageManagerName]commands.PackageCommander{
+			jujupackaging.YumPackageManager: commands.NewYumPackageCommander(),
+		}
+		cfg.pacconfer = map[jujupackaging.PackageManagerName]config.PackagingConfigurer{
+			jujupackaging.YumPackageManager: config.NewYumPackagingConfigurer(ser),
+		}
 		return &centOSCloudConfig{
-			cloudConfig: &cloudConfig{
-				series: ser,
-				paccmder: map[jujupackaging.PackageManagerName]commands.PackageCommander{
-					jujupackaging.YumPackageManager: commands.NewYumPackageCommander(),
-				},
-				pacconfer: map[jujupackaging.PackageManagerName]config.PackagingConfigurer{
-					jujupackaging.YumPackageManager: config.NewYumPackagingConfigurer(ser),
-				},
-				renderer: renderer,
-				attrs:    make(map[string]interface{}),
-			},
-			helper: centOSHelper{},
+			cloudConfig: cfg,
+			helper:      centOSHelper{},
 		}, nil
 	case os.OpenSUSE:
-		renderer, _ := shell.NewRenderer("bash")
+		cfg.renderer = renderer("bash")
+		cfg.paccmder = map[jujupackaging.PackageManagerName]commands.PackageCommander{
+			jujupackaging.ZypperPackageManager: commands.NewZypperPackageCommander(),
+		}
+		cfg.pacconfer = map[jujupackaging.PackageManagerName]config.PackagingConfigurer{
+			jujupackaging.ZypperPackageManager: config.NewZypperPackagingConfigurer(ser),
+		}
 		return &centOSCloudConfig{
-			cloudConfig: &cloudConfig{
-				series: ser,
-				paccmder: map[jujupackaging.PackageManagerName]commands.PackageCommander{
-					jujupackaging.ZypperPackageManager: commands.NewZypperPackageCommander(),
-				},
-				pacconfer: map[jujupackaging.PackageManagerName]config.PackagingConfigurer{
-					jujupackaging.ZypperPackageManager: config.NewZypperPackagingConfigurer(ser),
-				},
-				renderer: renderer,
-				attrs:    make(map[string]interface{}),
-			},
-			helper: openSUSEHelper{
-				paccmder: commands.NewZypperPackageCommander(),
-			},
+			cloudConfig: cfg,
+			helper:      openSUSEHelper{paccmder: commands.NewZypperPackageCommander()},
 		}, nil
 	default:
 		return nil, errors.NotFoundf("cloudconfig for series %q", ser)
 	}
 }
 
+// TODO: de duplicate with cloudconfig/instancecfg
 // SSHKeys contains SSH host keys to configure on a machine.
-type SSHKeys struct {
-	RSA *SSHKey
-}
+type SSHKeys []SSHKey
 
+// TODO: de duplicate with cloudconfig/instancecfg
 // SSHKey is an SSH key pair.
 type SSHKey struct {
 	// Private is the SSH private key.
@@ -501,6 +492,9 @@ type SSHKey struct {
 
 	// Public is the SSH public key.
 	Public string
+
+	// PublicKeyAlgorithm contains the public key algorithm as defined by golang.org/x/crypto/ssh KeyAlgo*
+	PublicKeyAlgorithm string
 }
 
 // SSHKeyType is the type of the four used key types passed to cloudinit
@@ -509,11 +503,29 @@ type SSHKeyType string
 
 // The constant SSH key types sent to cloudinit through the cloudconfig
 const (
-	RSAPrivate SSHKeyType = "rsa_private"
-	RSAPublic  SSHKeyType = "rsa_public"
-	DSAPrivate SSHKeyType = "dsa_private"
-	DSAPublic  SSHKeyType = "dsa_public"
+	RSAPrivate     SSHKeyType = "rsa_private"
+	RSAPublic      SSHKeyType = "rsa_public"
+	DSAPrivate     SSHKeyType = "dsa_private"
+	DSAPublic      SSHKeyType = "dsa_public"
+	ECDSAPrivate   SSHKeyType = "ecdsa_private"
+	ECDSAPublic    SSHKeyType = "ecdsa_public"
+	ED25519Private SSHKeyType = "ed25519_private"
+	ED25519Public  SSHKeyType = "ed25519_public"
 )
+
+func NamesForSSHKeyAlgorithm(sshPublicKeyAlgorithm string) (private SSHKeyType, public SSHKeyType, err error) {
+	switch sshPublicKeyAlgorithm {
+	case ssh.KeyAlgoDSA:
+		return DSAPrivate, DSAPublic, nil
+	case ssh.KeyAlgoED25519:
+		return ED25519Private, ED25519Public, nil
+	case ssh.KeyAlgoRSA:
+		return RSAPrivate, RSAPublic, nil
+	case ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521:
+		return ECDSAPrivate, ECDSAPublic, nil
+	}
+	return "", "", errors.NotValidf("ssh key type %s", sshPublicKeyAlgorithm)
+}
 
 // OutputKind represents the available destinations for command output as sent
 // through the cloudnit cloudconfig

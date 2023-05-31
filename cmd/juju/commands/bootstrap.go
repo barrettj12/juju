@@ -30,6 +30,7 @@ import (
 	k8sconstants "github.com/juju/juju/caas/kubernetes/provider/constants"
 	jujucloud "github.com/juju/juju/cloud"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/constants"
 	"github.com/juju/juju/cmd/juju/common"
 	cmdcontroller "github.com/juju/juju/cmd/juju/controller"
 	cmdmodel "github.com/juju/juju/cmd/juju/model"
@@ -173,7 +174,7 @@ Examples:
     juju bootstrap aws
     juju bootstrap aws/us-east-1
     juju bootstrap google joe-us-east1
-    juju bootstrap --config=~/config-rs.yaml rackspace joe-syd
+    juju bootstrap --config=~/config-rs.yaml google joe-syd
     juju bootstrap --agent-version=2.2.4 aws joe-us-east-1
     juju bootstrap --config bootstrap-timeout=1200 azure joe-eastus
     juju bootstrap aws --storage-pool name=secret --storage-pool type=ebs --storage-pool encrypted=true
@@ -894,6 +895,11 @@ See `[1:] + "`juju kill-controller`" + `.`)
 			}
 		}
 	}()
+
+	if envMetadataSrc := os.Getenv(constants.EnvJujuMetadataSource); c.MetadataSource == "" && envMetadataSrc != "" {
+		c.MetadataSource = envMetadataSrc
+		ctx.Infof("Using metadata source directory %q", c.MetadataSource)
+	}
 
 	// If --metadata-source is specified, override the default tools metadata source so
 	// SyncTools can use it, and also upload any image metadata.

@@ -171,7 +171,11 @@ func (c *cacheWorker) Report() map[string]interface{} {
 
 func (c *cacheWorker) init() error {
 	// Initialize the cache controller with controller config.
-	controllerConfig, err := c.config.StatePool.SystemState().ControllerConfig()
+	systemState, err := c.config.StatePool.SystemState()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	controllerConfig, err := systemState.ControllerConfig()
 	if err != nil {
 		return errors.Annotate(err, "unable to get controller config")
 	}
@@ -498,6 +502,7 @@ func (c *cacheWorker) translateMachine(d multiwatcher.Delta) interface{} {
 		Annotations:              value.Annotations,
 		Config:                   value.Config,
 		Series:                   value.Series,
+		Base:                     value.Base,
 		ContainerType:            value.ContainerType,
 		IsManual:                 value.IsManual,
 		SupportedContainers:      value.SupportedContainers,
@@ -532,6 +537,7 @@ func (c *cacheWorker) translateUnit(d multiwatcher.Delta) interface{} {
 		Name:                     value.Name,
 		Application:              value.Application,
 		Series:                   value.Series,
+		Base:                     value.Base,
 		CharmURL:                 value.CharmURL,
 		Annotations:              value.Annotations,
 		Life:                     value.Life,

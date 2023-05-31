@@ -54,15 +54,16 @@ type Unit interface {
 	Application() (Application, error)
 	PrincipalName() (string, bool)
 	AssignedMachineId() (string, error)
-	CharmURL() (*charm.URL, bool)
+	CharmURL() *string
 }
 
 // Charm represents point of use methods from the state Charm object.
 type Charm interface {
 	LXDProfile() lxdprofile.Profile
+	Revision() int
 }
 
 // Application represents point of use methods from the state Application object.
 type Application interface {
-	CharmURL() *charm.URL
+	CharmURL() *string
 }

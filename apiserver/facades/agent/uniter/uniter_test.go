@@ -875,13 +875,13 @@ func (s *uniterSuite) TestCharmURL(c *gc.C) {
 	// Set wordpressUnit's charm URL first.
 	err := s.wordpressUnit.SetCharmURL(s.wpCharm.URL())
 	c.Assert(err, jc.ErrorIsNil)
-	curl, ok := s.wordpressUnit.CharmURL()
-	c.Assert(curl, gc.DeepEquals, s.wpCharm.URL())
-	c.Assert(ok, jc.IsTrue)
+	curl := s.wordpressUnit.CharmURL()
+	c.Assert(curl, gc.NotNil)
+	c.Assert(*curl, gc.Equals, s.wpCharm.URL().String())
 
 	// Make sure wordpress application's charm is what we expect.
-	curl, force := s.wordpress.CharmURL()
-	c.Assert(curl, gc.DeepEquals, s.wpCharm.URL())
+	curlStr, force := s.wordpress.CharmURL()
+	c.Assert(*curlStr, gc.Equals, s.wpCharm.String())
 	c.Assert(force, jc.IsFalse)
 
 	args := params.Entities{Entities: []params.Entity{
@@ -901,7 +901,7 @@ func (s *uniterSuite) TestCharmURL(c *gc.C) {
 	c.Assert(result, gc.DeepEquals, params.StringBoolResults{
 		Results: []params.StringBoolResult{
 			{Error: apiservertesting.ErrUnauthorized},
-			{Result: s.wpCharm.String(), Ok: ok},
+			{Result: s.wpCharm.String(), Ok: true},
 			{Error: apiservertesting.ErrUnauthorized},
 			{Error: apiservertesting.ErrUnauthorized},
 			{Result: s.wpCharm.String(), Ok: force},
@@ -913,8 +913,8 @@ func (s *uniterSuite) TestCharmURL(c *gc.C) {
 }
 
 func (s *uniterSuite) TestSetCharmURL(c *gc.C) {
-	_, ok := s.wordpressUnit.CharmURL()
-	c.Assert(ok, jc.IsFalse)
+	charmURL := s.wordpressUnit.CharmURL()
+	c.Assert(charmURL, gc.IsNil)
 
 	args := params.EntitiesCharmURL{Entities: []params.EntityCharmURL{
 		{Tag: "unit-mysql-0", CharmURL: "cs:quantal/application-42"},
@@ -934,10 +934,10 @@ func (s *uniterSuite) TestSetCharmURL(c *gc.C) {
 	// Verify the charm URL was set.
 	err = s.wordpressUnit.Refresh()
 	c.Assert(err, jc.ErrorIsNil)
-	charmURL, needsUpgrade := s.wordpressUnit.CharmURL()
+
+	charmURL = s.wordpressUnit.CharmURL()
 	c.Assert(charmURL, gc.NotNil)
-	c.Assert(charmURL.String(), gc.Equals, s.wpCharm.String())
-	c.Assert(needsUpgrade, jc.IsTrue)
+	c.Assert(*charmURL, gc.Equals, s.wpCharm.String())
 }
 
 func (s *uniterSuite) TestWorkloadVersion(c *gc.C) {
@@ -1363,7 +1363,7 @@ func (s *uniterSuite) TestConfigSettings(c *gc.C) {
 		Entities: []params.EntityCharmURL{
 			{
 				Tag:      s.wordpressUnit.Tag().String(),
-				CharmURL: s.wpCharm.URL().String(),
+				CharmURL: s.wpCharm.String(),
 			},
 		},
 	})
@@ -4070,7 +4070,7 @@ func (s *unitMetricBatchesSuite) TestAddMetricsBatch(c *gc.C) {
 			Tag: s.meteredUnit.Tag().String(),
 			Batch: params.MetricBatch{
 				UUID:     uuid,
-				CharmURL: s.meteredCharm.URL().String(),
+				CharmURL: s.meteredCharm.String(),
 				Created:  time.Now(),
 				Metrics:  metrics,
 			}}}},
@@ -4084,7 +4084,7 @@ func (s *unitMetricBatchesSuite) TestAddMetricsBatch(c *gc.C) {
 	batch, err := s.State.MetricBatch(uuid)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(batch.UUID(), gc.Equals, uuid)
-	c.Assert(batch.CharmURL(), gc.Equals, s.meteredCharm.URL().String())
+	c.Assert(batch.CharmURL(), gc.Equals, s.meteredCharm.String())
 	c.Assert(batch.Unit(), gc.Equals, s.meteredUnit.Name())
 	storedMetrics := batch.Metrics()
 	c.Assert(storedMetrics, gc.HasLen, 1)
@@ -4101,7 +4101,7 @@ func (s *unitMetricBatchesSuite) TestAddMetricsBatchNoCharmURL(c *gc.C) {
 			Tag: s.meteredUnit.Tag().String(),
 			Batch: params.MetricBatch{
 				UUID:     uuid,
-				CharmURL: s.meteredCharm.URL().String(),
+				CharmURL: s.meteredCharm.String(),
 				Created:  time.Now(),
 				Metrics:  metrics,
 			}}}})
@@ -4114,7 +4114,7 @@ func (s *unitMetricBatchesSuite) TestAddMetricsBatchNoCharmURL(c *gc.C) {
 	batch, err := s.State.MetricBatch(uuid)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(batch.UUID(), gc.Equals, uuid)
-	c.Assert(batch.CharmURL(), gc.Equals, s.meteredCharm.URL().String())
+	c.Assert(batch.CharmURL(), gc.Equals, s.meteredCharm.String())
 	c.Assert(batch.Unit(), gc.Equals, s.meteredUnit.Name())
 	storedMetrics := batch.Metrics()
 	c.Assert(storedMetrics, gc.HasLen, 1)
@@ -4646,6 +4646,7 @@ func (s *uniterNetworkInfoSuite) TestNetworkInfoPermissions(c *gc.C) {
 				Results: map[string]params.NetworkInfoResult{
 					"unknown": {
 						Error: &params.Error{
+							Code:    params.CodeNotValid,
 							Message: `undefined for unit charm: endpoint "unknown" not valid`,
 						},
 					},

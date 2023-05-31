@@ -610,10 +610,11 @@ func (s *credentialsSuite) TestFinalizeCredentialRelativeFilePath(c *gc.C) {
 }
 
 func (s *credentialsSuite) TestFinalizeCredentialInvalidFilePath(c *gc.C) {
+	fp := filepath.Join(c.MkDir(), "somefile")
 	cred := cloud.NewCredential(
 		cloud.JSONFileAuthType,
 		map[string]string{
-			"file": filepath.Join(c.MkDir(), "somefile"),
+			"file": fp,
 		},
 	)
 	schema := cloud.CredentialSchema{{
@@ -650,7 +651,7 @@ func (s *credentialsSuite) TestRemoveSecrets(c *gc.C) {
 
 func (s *credentialsSuite) TestValidateFileAttrValue(c *gc.C) {
 	_, err := cloud.ValidateFileAttrValue("/xyz/nothing.blah")
-	c.Assert(err, gc.ErrorMatches, "invalid file path: /xyz/nothing.blah")
+	c.Assert(err, gc.ErrorMatches, "invalid file path: stat /xyz/nothing.blah: no such file or directory")
 
 	absPathNewFile := filepath.Join(utils.Home(), "new-creds.json")
 	err = ioutil.WriteFile(absPathNewFile, []byte("abc"), 0600)
@@ -661,5 +662,99 @@ func (s *credentialsSuite) TestValidateFileAttrValue(c *gc.C) {
 	c.Assert(absPath, gc.Equals, absPathNewFile)
 
 	_, err = cloud.ValidateFileAttrValue(utils.Home())
-	c.Assert(err, gc.ErrorMatches, fmt.Sprintf("file path must be a file: %s", utils.Home()))
+	c.Assert(err, gc.ErrorMatches, fmt.Sprintf("file path %q must be a file", utils.Home()))
+}
+
+func (s *credentialsSuite) TestExpandFilePathsOfCredential(c *gc.C) {
+	tempFile, err := ioutil.TempFile("", "")
+	c.Assert(err, jc.ErrorIsNil)
+
+	_, err = tempFile.WriteString("test")
+	c.Assert(err, jc.ErrorIsNil)
+
+	c.Assert(tempFile.Close(), jc.ErrorIsNil)
+
+	cred := cloud.NewNamedCredential("test",
+		cloud.AuthType("test"),
+		map[string]string{
+			"test-key":  tempFile.Name(),
+			"test-key1": "test-value",
+		},
+		false,
+	)
+
+	credSchema := cloud.CredentialSchema{
+		{
+			Name: "test-key",
+			CredentialAttr: cloud.CredentialAttr{
+				Description:    "test credential attribute",
+				ExpandFilePath: true,
+				Hidden:         false,
+			},
+		},
+		{
+			Name: "test-key1",
+			CredentialAttr: cloud.CredentialAttr{
+				Description:    "test credential attribute",
+				ExpandFilePath: false,
+				Hidden:         false,
+			},
+		},
+	}
+
+	cred, err = cloud.ExpandFilePathsOfCredential(
+		cred, map[cloud.AuthType]cloud.CredentialSchema{
+			cloud.AuthType("test"): credSchema,
+		},
+	)
+	c.Assert(err, jc.ErrorIsNil)
+
+	c.Assert(cred.Attributes()["test-key"], gc.Equals, "test")
+	c.Assert(cred.Attributes()["test-key1"], gc.Equals, "test-value")
+}
+
+// Regression test for lp1976620
+func (s *credentialsSuite) TestExpandFilePathsOfPem(c *gc.C) {
+	testPemCert := `
+-----BEGIN CERTIFICATE-----
+MIIB5DCCAWugAwIBAgIRAI0U9NoAVVolPG4O85Zr3dgwCgYIKoZIzj0EAwMwOjEc
+MBoGA1UEChMTbGludXhjb250YWluZXJzLm9yZzEaMBgGA1UEAwwRdGxtQHRsbS1t
+YnAubG9jYWwwHhcNMjIwMzAzMTMxNzMxWhcNMzIwMjI5MTMxNzMxWjA6MRwwGgYD
+VQQKExNsaW51eGNvbnRhaW5lcnMub3JnMRowGAYDVQQDDBF0bG1AdGxtLW1icC5s
+b2NhbDB2MBAGByqGSM49AgEGBSuBBAAiA2IABHvoqBLC2amlFuAQq/IrMUd4Cver
+teYK/BkJfTOx5M6Gt+RE7Vi0uVO0MfzOPrtTKQQPtffSelyGtpxZtQjRLKhdzCa9
+E2lDhIf/j6axT64cp3vdA3XU96pIfFH32Ff1yqM1MDMwDgYDVR0PAQH/BAQDAgWg
+MBMGA1UdJQQMMAoGCCsGAQUFBwMCMAwGA1UdEwEB/wQCMAAwCgYIKoZIzj0EAwMD
+ZwAwZAIwcac9nw5lXFtQyO9d5ZDUBfjafw/fg0YvaypV5KeRhC/ljB4ooN+DuJjy
+L8jEeLyWAjA53jxIoL5A5CyXKhqQPcYyfTMHstcP7ip8wLMnee1y3b8wwq9celAa
+QD0jIrgXpik=
+-----END CERTIFICATE-----
+`
+
+	cred := cloud.NewNamedCredential("test",
+		cloud.AuthType("test"),
+		map[string]string{
+			"test-key": testPemCert,
+		},
+		false,
+	)
+
+	credSchema := cloud.CredentialSchema{
+		{
+			Name: "test-key",
+			CredentialAttr: cloud.CredentialAttr{
+				Description:    "test credential attribute",
+				ExpandFilePath: true,
+				Hidden:         false,
+			},
+		},
+	}
+
+	cred, err := cloud.ExpandFilePathsOfCredential(
+		cred, map[cloud.AuthType]cloud.CredentialSchema{
+			cloud.AuthType("test"): credSchema,
+		},
+	)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(cred.Attributes()["test-key"], gc.Equals, testPemCert)
 }

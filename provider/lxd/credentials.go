@@ -4,11 +4,11 @@
 package lxd
 
 import (
+	"crypto/x509"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"io/ioutil"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -24,6 +24,8 @@ import (
 	"github.com/juju/juju/environs"
 	environscloudspec "github.com/juju/juju/environs/cloudspec"
 	"github.com/juju/juju/juju/osenv"
+	"github.com/juju/juju/pki"
+	pkiassertion "github.com/juju/juju/pki/assertion"
 	"github.com/juju/juju/provider/lxd/lxdnames"
 )
 
@@ -53,22 +55,10 @@ type CertificateGenerator interface {
 	Generate(client bool, addHosts bool) (certPEM, keyPEM []byte, err error)
 }
 
-// NetLookup groups methods for looking up hosts and interface addresses.
-type NetLookup interface {
-	// LookupHost looks up the given host using the local resolver.
-	// It returns a slice of that host's addresses.
-	LookupHost(string) ([]string, error)
-
-	// InterfaceAddrs returns a list of the system's unicast interface
-	// addresses.
-	InterfaceAddrs() ([]net.Addr, error)
-}
-
 // environProviderCredentials implements environs.ProviderCredentials.
 type environProviderCredentials struct {
 	certReadWriter  CertificateReadWriter
 	certGenerator   CertificateGenerator
-	lookup          NetLookup
 	serverFactory   ServerFactory
 	lxcConfigReader LXCConfigReader
 }
@@ -117,7 +107,7 @@ func (p environProviderCredentials) RegisterCredentials(cld cloud.Cloud) (map[st
 	// only register credentials if the operator is attempting to access "lxd"
 	// or "localhost"
 	cloudName := cld.Name
-	if cloudName != lxdnames.DefaultCloud && cloudName != lxdnames.DefaultCloudAltName {
+	if !lxdnames.IsDefaultCloud(cloudName) {
 		return make(map[string]*cloud.CloudCredential), nil
 	}
 
@@ -155,9 +145,13 @@ func (p environProviderCredentials) DetectCredentials(cloudName string) (*cloud.
 		logger.Debugf("unable to detect remote LXC credentials: %s", err)
 	}
 
-	localCertCredentials, err := p.detectLocalCredentials(certPEM, keyPEM)
-	if err != nil {
-		logger.Debugf("unable to detect local LXC credentials: %s", err)
+	// If the cloud is built-in, we can start a local server to
+	// finalise the credential over the LXD Unix docket.
+	var localCertCredentials *cloud.Credential
+	if cloudName == "" || lxdnames.IsDefaultCloud(cloudName) {
+		if localCertCredentials, err = p.detectLocalCredentials(certPEM, keyPEM); err != nil {
+			logger.Debugf("unable to detect local LXC credentials: %s", err)
+		}
 	}
 
 	authCredentials := make(map[string]cloud.Credential)
@@ -168,8 +162,8 @@ func (p environProviderCredentials) DetectCredentials(cloudName string) (*cloud.
 		authCredentials[k] = v
 	}
 	if localCertCredentials != nil {
-		if cloudName == "" || cloudName == lxdnames.DefaultCloud || cloudName == lxdnames.DefaultCloudAltName {
-			authCredentials["localhost"] = *localCertCredentials
+		if cloudName == "" || lxdnames.IsDefaultCloud(cloudName) {
+			authCredentials[lxdnames.DefaultCloud] = *localCertCredentials
 		}
 	}
 	return &cloud.CloudCredential{
@@ -273,11 +267,9 @@ func (p environProviderCredentials) readOrGenerateCert(logf func(string, ...inte
 // This is an optional interface to check if the server certificate has not
 // been filled in.
 func (p environProviderCredentials) ShouldFinalizeCredential(cred cloud.Credential) bool {
-	// The credential is fully formed, so we assume the client
-	// certificate is uploaded to the server already.
-	credAttrs := cred.Attributes()
-	_, ok := credAttrs[credAttrServerCert]
-	return !ok
+	// We should always finalize the credentials  so we can perform some sanity
+	// checking on them.
+	return true
 }
 
 // FinalizeCredential is part of the environs.ProviderCredentials interface.
@@ -320,6 +312,34 @@ func (p environProviderCredentials) FinalizeCredential(
 	}
 }
 
+// validateServerCertificate validates the server certificate we have
+// been supplied with to make sure that it meets our expectations. Checks
+// involve making sure there is a certificate contained in the pem data and that
+// certificate can be used for server authentication.
+//
+// NOTE (tlm): This was added to help users who have potentially made a mistake
+// in their credentials.yaml file when calling juju add-credential. The case
+// that prompted this function was mixing the client certificate with the server
+// certificate.
+func validateServerCertificate(serverPemCertificate string) error {
+	certs, _, err := pki.UnmarshalPemData([]byte(serverPemCertificate))
+	if err != nil {
+		return fmt.Errorf("parsing LXD server certificate as PEM: %w", err)
+	}
+
+	if len(certs) == 0 {
+		return errors.NotFoundf("LXD server certificate")
+	}
+
+	// We only care about the first certificate here as any more cert's in the
+	// file are considered to form the rest of the supporting chain.
+	if !pkiassertion.HasExtKeyUsage(certs[0], x509.ExtKeyUsageServerAuth) {
+		return errors.New("certificate from LXD server certificate file is not signed for server authentication")
+	}
+
+	return nil
+}
+
 func (p environProviderCredentials) finalizeCredential(
 	ctx environs.FinalizeCredentialContext,
 	args environs.FinalizeCredentialParams,
@@ -329,11 +349,6 @@ func (p environProviderCredentials) finalizeCredential(
 	// credential, and fill in the server certificate if we can.
 	stderr := ctx.GetStderr()
 	credAttrs := args.Credential.Attributes()
-	// The credential is fully formed, so we assume the client
-	// certificate is uploaded to the server already.
-	if v, ok := credAttrs[credAttrServerCert]; ok && v != "" {
-		return &args.Credential, nil
-	}
 
 	certPEM := credAttrs[credAttrClientCert]
 	keyPEM := credAttrs[credAttrClientKey]
@@ -344,14 +359,10 @@ func (p environProviderCredentials) finalizeCredential(
 		return nil, errors.NotValidf("missing or empty %q attribute", credAttrClientKey)
 	}
 
-	isLocalEndpoint, err := p.isLocalEndpoint(args.CloudEndpoint)
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-
-	// If the end point is local, set up the local server and automate the local
-	// certificate credentials.
-	if isLocalEndpoint {
+	// If the cloud is built-in, the endpoint will be empty
+	// and we can start a local server to finalise the credential
+	// over the LXD Unix docket.
+	if args.CloudEndpoint == "" {
 		svr, err := p.serverFactory.LocalServer()
 		if err != nil {
 			return nil, errors.Trace(err)
@@ -363,7 +374,11 @@ func (p environProviderCredentials) finalizeCredential(
 		return cred, errors.Trace(err)
 	}
 
-	// We're not local, so setup the remote server and automate the remote
+	if v, ok := credAttrs[credAttrServerCert]; ok && v != "" {
+		return &args.Credential, validateServerCertificate(v)
+	}
+
+	// We're not local, so set up the remote server and automate the remote
 	// certificate credentials.
 	return p.finalizeRemoteCredential(
 		stderr,
@@ -415,17 +430,17 @@ func (p environProviderCredentials) finalizeRemoteCredential(
 	if err != nil || cert == nil {
 		if err := server.CreateCertificate(api.CertificatesPost{
 			CertificatePut: api.CertificatePut{
-				Name: credentials.Label,
-				Type: "client",
+				Name:        credentials.Label,
+				Type:        "client",
+				Certificate: base64.StdEncoding.EncodeToString(clientX509Cert.Raw),
 			},
-			Certificate: base64.StdEncoding.EncodeToString(clientX509Cert.Raw),
-			Password:    trustPassword,
+			Password: trustPassword,
 		}); err != nil {
 			return nil, errors.Trace(err)
 		}
-		fmt.Fprintln(output, "Uploaded certificate to LXD server.")
+		_, _ = fmt.Fprintln(output, "Uploaded certificate to LXD server.")
 	} else {
-		fmt.Fprintln(output, "Reusing certificate from LXD server.")
+		_, _ = fmt.Fprintln(output, "Reusing certificate from LXD server.")
 	}
 
 	lxdServer, _, err := server.GetServer()
@@ -435,7 +450,7 @@ func (p environProviderCredentials) finalizeRemoteCredential(
 	lxdServerCert := lxdServer.Environment.Certificate
 
 	// request to make sure that we can actually query correctly in a secure
-	// manor.
+	// manner.
 	attributes := make(map[string]string)
 	for k, v := range credAttrs {
 		if k == credAttrTrustPassword {
@@ -516,32 +531,6 @@ func (p environProviderCredentials) finalizeLocalCredential(
 	return &out, nil
 }
 
-func (p environProviderCredentials) isLocalEndpoint(endpoint string) (bool, error) {
-	if endpoint == "" {
-		// No endpoint specified, so assume we're local. This
-		// will happen, for example, when destroying a 2.0
-		// LXD controller.
-		return true, nil
-	}
-	endpointURL, err := endpointURL(endpoint)
-	if err != nil {
-		return false, errors.Trace(err)
-	}
-	host, _, err := net.SplitHostPort(endpointURL.Host)
-	if err != nil {
-		host = endpointURL.Host
-	}
-	endpointAddrs, err := p.lookup.LookupHost(host)
-	if err != nil {
-		return false, errors.Trace(err)
-	}
-	localAddrs, err := p.lookup.InterfaceAddrs()
-	if err != nil {
-		return false, errors.Trace(err)
-	}
-	return addrsContainsAny(localAddrs, endpointAddrs), nil
-}
-
 // certificateReadWriter is the default implementation for reading and writing
 // certificates to disk.
 type certificateReadWriter struct{}
@@ -583,16 +572,6 @@ func (certificateGenerator) Generate(client bool, addHosts bool) (certPEM, keyPE
 	return shared.GenerateMemCert(client, addHosts)
 }
 
-type netLookup struct{}
-
-func (netLookup) LookupHost(host string) ([]string, error) {
-	return net.LookupHost(host)
-}
-
-func (netLookup) InterfaceAddrs() ([]net.Addr, error) {
-	return net.InterfaceAddrs()
-}
-
 func endpointURL(endpoint string) (*url.URL, error) {
 	remoteURL, err := url.Parse(endpoint)
 	if err != nil || remoteURL.Scheme == "" {
@@ -612,28 +591,6 @@ func endpointURL(endpoint string) (*url.URL, error) {
 		}
 	}
 	return remoteURL, nil
-}
-
-func addrsContainsAny(haystack []net.Addr, needles []string) bool {
-	for _, needle := range needles {
-		if addrsContains(haystack, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-func addrsContains(haystack []net.Addr, needle string) bool {
-	ip := net.ParseIP(needle)
-	if ip == nil {
-		return false
-	}
-	for _, addr := range haystack {
-		if addr, ok := addr.(*net.IPNet); ok && addr.IP.Equal(ip) {
-			return true
-		}
-	}
-	return false
 }
 
 func getCertificates(credentials cloud.Credential) (client *lxd.Certificate, server string, ok bool) {

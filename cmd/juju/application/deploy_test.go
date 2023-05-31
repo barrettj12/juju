@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -45,7 +46,7 @@ import (
 	apicharms "github.com/juju/juju/api/client/charms"
 	apiclient "github.com/juju/juju/api/client/client"
 	"github.com/juju/juju/api/client/modelconfig"
-	"github.com/juju/juju/api/client/resources/client"
+	"github.com/juju/juju/api/client/resources"
 	commoncharm "github.com/juju/juju/api/common/charm"
 	apicommoncharms "github.com/juju/juju/api/common/charms"
 	apitesting "github.com/juju/juju/api/testing"
@@ -67,7 +68,6 @@ import (
 	jjtesting "github.com/juju/juju/juju/testing"
 	"github.com/juju/juju/jujuclient"
 	"github.com/juju/juju/jujuclient/jujuclienttesting"
-	"github.com/juju/juju/resource/resourceadapters"
 	"github.com/juju/juju/rpc/params"
 	"github.com/juju/juju/state"
 	"github.com/juju/juju/storage"
@@ -76,22 +76,29 @@ import (
 	"github.com/juju/juju/version"
 )
 
+func resourceHash(content string) charmresource.Fingerprint {
+	fp, err := charmresource.GenerateFingerprint(strings.NewReader(content))
+	if err != nil {
+		panic(err)
+	}
+	return fp
+}
+
 // defaultSupportedJujuSeries is used to return canned information about what
 // juju supports in terms of the release cycle
 // see juju/os and documentation https://www.ubuntu.com/about/release-cycle
-var defaultSupportedJujuSeries = set.NewStrings("bionic", "xenial", "trusty", testing.KubernetesSeriesName)
+var defaultSupportedJujuSeries = set.NewStrings("focal", "bionic", "xenial", "trusty", testing.KubernetesSeriesName)
 
 var defaultLocalOrigin = commoncharm.Origin{
 	Source:       commoncharm.OriginLocal,
 	Architecture: arch.DefaultArchitecture,
-	OS:           "ubuntu",
 	Series:       "bionic",
 }
 
 type DeploySuiteBase struct {
 	testing.RepoSuite
 	coretesting.CmdBlockHelper
-	DeployResources resourceadapters.DeployResourcesFunc
+	DeployResources deployer.DeployResourcesFunc
 
 	fakeAPI *fakeDeployAPI
 }
@@ -161,6 +168,9 @@ func (s *DeploySuiteBase) runDeployWithOutput(c *gc.C, args ...string) (string, 
 }
 
 func (s *DeploySuiteBase) SetUpTest(c *gc.C) {
+	if runtime.GOOS == "darwin" {
+		c.Skip("Mongo failures on macOS")
+	}
 	s.RepoSuite.SetUpTest(c)
 	s.PatchValue(&supportedJujuSeries, func(time.Time, string, string) (set.Strings, error) {
 		return defaultSupportedJujuSeries, nil
@@ -169,7 +179,7 @@ func (s *DeploySuiteBase) SetUpTest(c *gc.C) {
 	c.Assert(s.CmdBlockHelper, gc.NotNil)
 	s.AddCleanup(func(*gc.C) { s.CmdBlockHelper.Close() })
 	s.DeployResources = func(applicationID string,
-		chID client.CharmID,
+		chID resources.CharmID,
 		csMac *macaroon.Macaroon,
 		filesAndRevisions map[string]string,
 		resources map[string]charmresource.Meta,
@@ -205,10 +215,7 @@ func deployResources(
 	if len(resources) == 0 {
 		return nil, nil
 	}
-	stRes, err := st.Resources()
-	if err != nil {
-		return nil, err
-	}
+	stRes := st.Resources()
 	ids = make(map[string]string)
 	for _, res := range resources {
 		content := res.Name + " content"
@@ -296,9 +303,6 @@ var initErrorTests = []struct {
 	}, {
 		args: []string{"bundle", "--map-machines", "foo"},
 		err:  `error in --map-machines: expected "existing" or "<bundle-id>=<machine-id>", got "foo"`,
-	}, {
-		args: []string{"charm-name", "--revision", "3"},
-		err:  `when using --revision option, you must also use --channel option`,
 	},
 }
 
@@ -386,23 +390,22 @@ func (s *DeploySuite) TestDeployFromPathOldCharm(c *gc.C) {
 }
 
 func (s *DeploySuite) TestDeployFromPathOldCharmMissingSeries(c *gc.C) {
-	// Update the model default series to be unset.
-	updateAttrs := map[string]interface{}{"default-series": ""}
-	err := s.Model.UpdateModelConfig(updateAttrs, nil)
-	c.Assert(err, jc.ErrorIsNil)
-
 	path := testcharms.RepoWithSeries("bionic").ClonedDirPath(c.MkDir(), "dummy")
-	err = s.runDeploy(c, path)
+	err := s.runDeploy(c, path)
 	c.Assert(err, gc.ErrorMatches, "series not specified and charm does not define any")
 }
 
 func (s *DeploySuite) TestDeployFromPathOldCharmMissingSeriesUseDefaultSeries(c *gc.C) {
+	updateAttrs := map[string]interface{}{"default-series": version.DefaultSupportedLTS()}
+	err := s.Model.UpdateModelConfig(updateAttrs, nil)
+	c.Assert(err, jc.ErrorIsNil)
+
 	charmDir := testcharms.RepoWithSeries("bionic").ClonedDir(c.MkDir(), "dummy")
 	curl := charm.MustParseURL(fmt.Sprintf("local:%s/dummy-1", version.DefaultSupportedLTS()))
 	withLocalCharmDeployable(s.fakeAPI, curl, charmDir, false)
 	withCharmDeployable(s.fakeAPI, curl, "focal", charmDir.Meta(), charmDir.Metrics(), false, false, 1, nil, nil)
 
-	err := s.runDeployForState(c, charmDir.Path)
+	err = s.runDeployForState(c, charmDir.Path)
 	c.Assert(err, jc.ErrorIsNil)
 	s.AssertApplication(c, "dummy", curl, 1, 0)
 }
@@ -438,7 +441,7 @@ func (s *DeploySuite) TestDeployFromPath(c *gc.C) {
 func (s *DeploySuite) TestDeployFromPathUnsupportedSeries(c *gc.C) {
 	path := testcharms.RepoWithSeries("bionic").ClonedDirPath(c.MkDir(), "multi-series")
 	err := s.runDeploy(c, path, "--series", "quantal")
-	c.Assert(err, gc.ErrorMatches, `series "quantal" not supported by charm, supported series are: precise,trusty,xenial,yakkety,bionic`)
+	c.Assert(err, gc.ErrorMatches, `series "quantal" not supported by charm, supported series are: precise, trusty, xenial, yakkety, bionic`)
 }
 
 func (s *DeploySuite) TestDeployFromPathUnsupportedSeriesForce(c *gc.C) {
@@ -808,6 +811,7 @@ func (s *DeploySuite) TestDeployBundlesRequiringTrust(c *gc.C) {
 		Source:       commoncharm.OriginCharmStore,
 		Architecture: arch.DefaultArchitecture,
 		Series:       "bionic",
+		Base:         series.MakeDefaultBase("ubuntu", "18.04"),
 	}
 
 	deployURL := *inURL
@@ -1003,7 +1007,7 @@ type CAASDeploySuiteBase struct {
 	jujutesting.IsolationSuite
 	deployer.DeployerAPI
 	Store           *jujuclient.MemStore
-	DeployResources resourceadapters.DeployResourcesFunc
+	DeployResources deployer.DeployResourcesFunc
 
 	CharmsPath string
 	factory    *mocks.MockDeployerFactory
@@ -1054,11 +1058,6 @@ func (s *CAASDeploySuiteBase) fakeAPI() *fakeDeployAPI {
 		return s.factory
 	}
 	return fakeAPI
-}
-
-func (s *CAASDeploySuiteBase) makeCharmDir(c *gc.C, cloneCharm string) *charm.CharmDir {
-	charmsPath := c.MkDir()
-	return testcharms.RepoWithSeries("kubernetes").ClonedDir(charmsPath, cloneCharm)
 }
 
 func (s *CAASDeploySuiteBase) runDeploy(c *gc.C, fakeAPI *fakeDeployAPI, args ...string) (*cmd.Context, error) {
@@ -1192,7 +1191,7 @@ func (s *CAASDeploySuite) TestDevices(c *gc.C) {
 	)
 	s.DeployResources = func(
 		applicationID string,
-		chID client.CharmID,
+		chID resources.CharmID,
 		csMac *macaroon.Macaroon,
 		filesAndRevisions map[string]string,
 		resources map[string]charmresource.Meta,
@@ -1464,7 +1463,7 @@ func (s *DeploySuite) setupNonESMSeries(c *gc.C) (string, string) {
 		return supported, nil
 	})
 
-	nonEMSSeries := supportedNotEMS.Values()[0]
+	nonEMSSeries := supportedNotEMS.SortedValues()[0]
 
 	loggingPath := filepath.Join(c.MkDir(), "series-logging")
 	repo := testcharms.RepoWithSeries("bionic")
@@ -1527,6 +1526,7 @@ func (s *DeploySuite) TestDeployWithTermsNotSigned(c *gc.C) {
 		Source:       commoncharm.OriginCharmStore,
 		Architecture: arch.DefaultArchitecture,
 		Series:       "bionic",
+		Base:         series.MakeDefaultBase("ubuntu", "18.04"),
 	}
 	s.fakeAPI.Call("AddCharm", &deployURL, origin, false).Returns(origin, error(termsRequiredError))
 	s.fakeAPI.Call("CharmInfo", deployURL.String()).Returns(
@@ -1554,6 +1554,7 @@ func (s *DeploySuite) TestDeployWithChannel(c *gc.C) {
 		Source:       commoncharm.OriginCharmStore,
 		Architecture: arch.DefaultArchitecture,
 		Series:       "bionic",
+		Base:         series.MakeDefaultBase("ubuntu", "18.04"),
 		Risk:         "beta",
 	}
 	s.fakeAPI.Call("ResolveCharm", curl, origin, false).Returns(
@@ -1597,7 +1598,7 @@ func (s *DeploySuite) TestDeployCharmsEndpointNotImplemented(c *gc.C) {
 	defer server.Close()
 
 	meteredCharmURL := charm.MustParseURL("cs:bionic/metered-1")
-	charmDir := testcharms.RepoWithSeries("bionic").CharmDir("metered")
+	charmDir := testcharms.CharmRepo().CharmDir("metered")
 
 	s.fakeAPI.planURL = server.URL
 	withCharmRepoResolvable(s.fakeAPI, meteredCharmURL, "")
@@ -1647,7 +1648,7 @@ func (s *DeploySuite) TestAddMetricCredentials(c *gc.C) {
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
-	charmDir := testcharms.RepoWithSeries("bionic").CharmDir("metered")
+	charmDir := testcharms.CharmRepo().CharmDir("metered")
 	meteredURL := charm.MustParseURL("cs:bionic/metered-1")
 	s.fakeAPI.planURL = server.URL
 	withCharmDeployable(s.fakeAPI, meteredURL, "bionic", charmDir.Meta(), charmDir.Metrics(), true, false, 1, nil, nil)
@@ -1700,7 +1701,7 @@ func (s *DeploySuite) TestAddMetricCredentialsDefaultPlan(c *gc.C) {
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
-	charmDir := testcharms.RepoWithSeries("bionic").CharmDir("metered")
+	charmDir := testcharms.CharmRepo().CharmDir("metered")
 
 	meteredURL := charm.MustParseURL("cs:bionic/metered-1")
 	s.fakeAPI.planURL = server.URL
@@ -1789,7 +1790,7 @@ pings:
   type: gauge		
   description: ping pongs		
 `
-	charmDir := testcharms.RepoWithSeries("bionic").ClonedDir(c.MkDir(), "metered")
+	charmDir := testcharms.CharmRepo().ClonedDir(c.MkDir(), "metered")
 	metadataPath := filepath.Join(charmDir.Path, "metrics.yaml")
 	file, err := os.OpenFile(metadataPath, os.O_TRUNC|os.O_RDWR, 0666)
 	if err != nil {
@@ -1839,7 +1840,7 @@ pings:
   type: gauge		
   description: ping pongs		
 `
-	charmDir := testcharms.RepoWithSeries("bionic").ClonedDir(c.MkDir(), "metered")
+	charmDir := testcharms.CharmRepo().ClonedDir(c.MkDir(), "metered")
 	metadataPath := filepath.Join(charmDir.Path, "metrics.yaml")
 	file, err := os.OpenFile(metadataPath, os.O_TRUNC|os.O_RDWR, 0666)
 	if err != nil {
@@ -1969,8 +1970,6 @@ func (c *testMetricsRegistrationHandler) ServeHTTP(w http.ResponseWriter, req *h
 
 type FakeStoreStateSuite struct {
 	DeploySuiteBase
-	path string
-	riak *state.Application
 }
 
 func (s *FakeStoreStateSuite) runDeploy(c *gc.C, args ...string) error {
@@ -1998,7 +1997,7 @@ func (s *FakeStoreStateSuite) setupCharmMaybeAdd(c *gc.C, url, name, series stri
 	return s.setupCharmMaybeAddForce(c, url, name, series, arch.DefaultArchitecture, false, addToState)
 }
 
-func (s *FakeStoreStateSuite) setupCharmMaybeAddForce(c *gc.C, url, name, series, arc string, force, addToState bool) charm.Charm {
+func (s *FakeStoreStateSuite) setupCharmMaybeAddForce(c *gc.C, url, name, aseries, arc string, force, addToState bool) charm.Charm {
 	baseURL := charm.MustParseURL(url)
 	baseURL.Series = ""
 	deployURL := charm.MustParseURL(url)
@@ -2011,8 +2010,7 @@ func (s *FakeStoreStateSuite) setupCharmMaybeAddForce(c *gc.C, url, name, series
 	noRevisionURL.Revision = -1
 	charmStoreURL := charm.MustParseURL(fmt.Sprintf("cs:%s", baseURL.Name))
 	seriesURL := charm.MustParseURL(url)
-	seriesURL.Series = series
-
+	seriesURL.Series = aseries
 	// In order to replicate what the charmstore does in terms of matching, we
 	// brute force (badly) the various types of charm urls.
 	// TODO (stickupkid): This is terrible, the fact that you're bruteforcing
@@ -2028,11 +2026,17 @@ func (s *FakeStoreStateSuite) setupCharmMaybeAddForce(c *gc.C, url, name, series
 		seriesURL,
 	}
 	for _, url := range charmURLs {
-		for _, serie := range []string{"", url.Series, series} {
+		for _, serie := range []string{"", url.Series, aseries} {
+			channel := ""
+			if serie != "" {
+				var err error
+				channel, err = series.SeriesVersion(serie)
+				c.Assert(err, jc.ErrorIsNil)
+			}
 			for _, a := range []string{"", arc, arch.DefaultArchitecture} {
 				platform := corecharm.Platform{
 					Architecture: a,
-					Series:       serie,
+					Channel:      channel,
 				}
 				origin, err := apputils.DeduceOrigin(url, charm.Channel{}, platform)
 				c.Assert(err, jc.ErrorIsNil)
@@ -2040,7 +2044,7 @@ func (s *FakeStoreStateSuite) setupCharmMaybeAddForce(c *gc.C, url, name, series
 				s.fakeAPI.Call("ResolveCharm", url, origin, false).Returns(
 					resolveURL,
 					origin,
-					[]string{series},
+					[]string{aseries},
 					error(nil),
 				)
 				s.fakeAPI.Call("AddCharm", resolveURL, origin, force).Returns(origin, error(nil))
@@ -2049,13 +2053,13 @@ func (s *FakeStoreStateSuite) setupCharmMaybeAddForce(c *gc.C, url, name, series
 	}
 
 	var chDir charm.Charm
-	chDir, err := charm.ReadCharmDir(testcharms.RepoWithSeries(series).CharmDirPath(name))
+	chDir, err := charm.ReadCharmDir(testcharms.RepoWithSeries(aseries).CharmDirPath(name))
 	if err != nil {
 		if !os.IsNotExist(errors.Cause(err)) {
 			c.Fatal(err)
 			return nil
 		}
-		chDir = testcharms.RepoForSeries(series).CharmArchive(c.MkDir(), "dummy")
+		chDir = testcharms.RepoForSeries(aseries).CharmArchive(c.MkDir(), "dummy")
 	}
 	if addToState {
 		_, err = jjtesting.AddCharm(s.State, resolveURL, chDir, force)
@@ -2064,17 +2068,23 @@ func (s *FakeStoreStateSuite) setupCharmMaybeAddForce(c *gc.C, url, name, series
 	return chDir
 }
 
-func (s *FakeStoreStateSuite) setupBundle(c *gc.C, url, name string, series ...string) {
+func (s *FakeStoreStateSuite) setupBundle(c *gc.C, url, name string, allSeries ...string) {
 	bundleResolveURL := charm.MustParseURL(url)
 	baseURL := *bundleResolveURL
 	baseURL.Revision = -1
 	withCharmRepoResolvable(s.fakeAPI, &baseURL, "")
-	bundleDir := testcharms.RepoWithSeries(series[0]).BundleArchive(c.MkDir(), name)
+	bundleDir := testcharms.RepoWithSeries(allSeries[0]).BundleArchive(c.MkDir(), name)
 
 	// Resolve a bundle with no revision and return a url with a version.  Ensure
 	// GetBundle expects the url with revision.
-	for _, serie := range append([]string{"", baseURL.Series}, series...) {
-		origin, err := apputils.DeduceOrigin(bundleResolveURL, charm.Channel{}, corecharm.Platform{Series: serie})
+	for _, serie := range append([]string{"", baseURL.Series}, allSeries...) {
+		channel := ""
+		if serie != "" {
+			var err error
+			channel, err = series.SeriesVersion(serie)
+			c.Assert(err, jc.ErrorIsNil)
+		}
+		origin, err := apputils.DeduceOrigin(bundleResolveURL, charm.Channel{}, corecharm.Platform{Channel: channel})
 		c.Assert(err, jc.ErrorIsNil)
 		s.fakeAPI.Call("ResolveBundleURL", &baseURL, origin).Returns(
 			bundleResolveURL,
@@ -2141,7 +2151,7 @@ func (s *FakeStoreStateSuite) assertApplicationsDeployed(c *gc.C, info map[strin
 			deviceConstraints = nil
 		}
 		deployed[app.Name()] = applicationInfo{
-			charm:       curl.String(),
+			charm:       *curl,
 			config:      config,
 			constraints: constr,
 			exposed:     app.IsExposed(),
@@ -2204,12 +2214,14 @@ func (s *DeploySuite) TestDeployCharmWithSomeEndpointBindingsSpecifiedSuccess(c 
 			Origin: commoncharm.Origin{
 				Source:       commoncharm.OriginCharmStore,
 				Architecture: arch.DefaultArchitecture,
+				Base:         series.MakeDefaultBase("ubuntu", "18.04"),
 				Series:       "bionic",
 			},
 		},
 		CharmOrigin: commoncharm.Origin{
 			Source:       commoncharm.OriginCharmStore,
 			Architecture: arch.DefaultArchitecture,
+			Base:         series.MakeDefaultBase("ubuntu", "18.04"),
 			Series:       "bionic",
 		},
 		ApplicationName: curl.Name,
@@ -2552,7 +2564,7 @@ func newDeployCommandForTest(fakeAPI *fakeDeployAPI) *DeployCommand {
 		},
 		DeployResources: func(
 			applicationID string,
-			chID client.CharmID,
+			chID resources.CharmID,
 			csMac *macaroon.Macaroon,
 			filesAndRevisions map[string]string,
 			resources map[string]charmresource.Meta,
@@ -2582,7 +2594,7 @@ func newDeployCommandForTest(fakeAPI *fakeDeployAPI) *DeployCommand {
 
 			return &deployAPIAdapter{
 				Connection:        apiRoot,
-				apiClient:         &apiClient{Client: apiclient.NewClient(apiRoot)},
+				legacyClient:      &apiClient{Client: apiclient.NewClient(apiRoot)},
 				charmsClient:      &charmsClient{Client: apicharms.NewClient(apiRoot)},
 				applicationClient: &applicationClient{Client: application.NewClient(apiRoot)},
 				modelConfigClient: &modelConfigClient{Client: modelconfig.NewClient(apiRoot)},
@@ -2682,8 +2694,9 @@ func (f *fakeDeployAPI) ResolveCharm(url *charm.URL, preferredChannel commonchar
 		return nil, commoncharm.Origin{}, nil, errors.Errorf(
 			"unknown schema for charm URL %q", url)
 	}
+	origin := results[1].(commoncharm.Origin)
 	return results[0].(*charm.URL),
-		results[1].(commoncharm.Origin),
+		origin,
 		results[2].([]string),
 		jujutesting.TypeAssertError(results[3])
 }
@@ -2701,8 +2714,9 @@ func (f *fakeDeployAPI) ResolveBundleURL(url *charm.URL, preferredChannel common
 		}
 		return nil, commoncharm.Origin{}, errors.NotValidf("charmstore bundle %q", url)
 	}
+	origin := results[1].(commoncharm.Origin)
 	return results[0].(*charm.URL),
-		results[1].(commoncharm.Origin),
+		origin,
 		jujutesting.TypeAssertError(results[2])
 }
 
@@ -2752,6 +2766,10 @@ func (f *fakeDeployAPI) AddCharmWithAuthorization(
 func (f *fakeDeployAPI) CharmInfo(url string) (*apicommoncharms.CharmInfo, error) {
 	results := f.MethodCall(f, "CharmInfo", url)
 	return results[0].(*apicommoncharms.CharmInfo), jujutesting.TypeAssertError(results[1])
+}
+
+func (f *fakeDeployAPI) Get(endpoint string, extra interface{}) error {
+	return nil
 }
 
 func (f *fakeDeployAPI) Deploy(args application.DeployArgs) error {
@@ -3104,7 +3122,7 @@ func withCharmDeployableWithDevicesAndStorage(
 func withCharmRepoResolvable(
 	fakeAPI *fakeDeployAPI,
 	url *charm.URL,
-	series string,
+	aseries string,
 ) {
 	// We have to handle all possible variations on the supplied URL.
 	// The real store can be queried with a base URL like "cs:foo" and
@@ -3128,16 +3146,19 @@ func withCharmRepoResolvable(
 		}
 		resolveURLs = append(resolveURLs, &inURL)
 	}
+	base, _ := series.GetBaseFromSeries(aseries)
 	for _, url := range resolveURLs {
 		for _, arch := range []string{"", arch.DefaultArchitecture} {
 			origin := commoncharm.Origin{
 				Source:       commoncharm.OriginCharmStore,
 				Architecture: arch,
-				Series:       series,
+				Series:       aseries,
+				Base:         base,
 			}
+			resolvedOrigin := origin
 			fakeAPI.Call("ResolveCharm", url, origin, false).Returns(
 				&resultURL,
-				origin,
+				resolvedOrigin,
 				[]string{"bionic"}, // Supported series
 				error(nil),
 			)

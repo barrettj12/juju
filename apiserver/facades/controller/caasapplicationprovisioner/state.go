@@ -14,19 +14,21 @@ import (
 	coreconfig "github.com/juju/juju/core/config"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/network"
+	"github.com/juju/juju/core/resources"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/environs/config"
-	"github.com/juju/juju/resource"
 	"github.com/juju/juju/state"
 )
 
 // CAASApplicationProvisionerState provides the subset of model state
 // required by the CAAS operator provisioner facade.
 type CAASApplicationProvisionerState interface {
+	ApplyOperation(state.ModelOperation) error
 	Model() (Model, error)
 	Application(string) (Application, error)
 	ResolveConstraints(cons constraints.Value) (constraints.Value, error)
-	Resources() (Resources, error)
+	Resources() Resources
+	Unit(string) (Unit, error)
 	WatchApplications() state.StringsWatcher
 }
 
@@ -38,12 +40,14 @@ type CAASApplicationControllerState interface {
 	ModelUUID() string
 	APIHostPortsForAgents() ([]network.SpaceHostPorts, error)
 	WatchAPIHostPortsForAgents() state.NotifyWatcher
+	WatchControllerConfig() state.NotifyWatcher
 }
 
 type Model interface {
 	UUID() string
 	ModelConfig() (*config.Config, error)
 	Containers(providerIds ...string) ([]state.CloudContainer, error)
+	WatchForModelConfigChanges() state.NotifyWatcher
 }
 
 type Application interface {
@@ -59,11 +63,14 @@ type Application interface {
 	Series() string
 	SetStatus(statusInfo status.StatusInfo) error
 	CharmModifiedVersion() int
-	CharmURL() (curl *charm.URL, force bool)
+	CharmURL() (curl *string, force bool)
 	ApplicationConfig() (coreconfig.ConfigAttributes, error)
 	GetScale() int
 	ClearResources() error
+	Watch() state.NotifyWatcher
 	WatchUnits() state.StringsWatcher
+	ProvisioningState() *state.ApplicationProvisioningState
+	SetProvisioningState(state.ApplicationProvisioningState) error
 }
 
 type Charm interface {
@@ -81,7 +88,7 @@ type Unit interface {
 }
 
 type Resources interface {
-	OpenResource(applicationID string, name string) (resource.Resource, io.ReadCloser, error)
+	OpenResource(applicationID string, name string) (resources.Resource, io.ReadCloser, error)
 }
 
 type stateShim struct {
@@ -104,8 +111,12 @@ func (s stateShim) Application(name string) (Application, error) {
 	return &applicationShim{app}, nil
 }
 
-func (s stateShim) Resources() (Resources, error) {
+func (s stateShim) Resources() Resources {
 	return s.State.Resources()
+}
+
+func (s stateShim) Unit(unitTag string) (Unit, error) {
+	return s.State.Unit(unitTag)
 }
 
 type applicationShim struct {

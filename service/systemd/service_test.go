@@ -61,10 +61,9 @@ type initSystemSuite struct {
 	fops    *MockFileSystemOps
 	exec    *systemd.MockShimExec
 
-	name    string
-	tag     names.Tag
-	conf    common.Conf
-	confStr string
+	name string
+	tag  names.Tag
+	conf common.Conf
 }
 
 var _ = gc.Suite(&initSystemSuite{})
@@ -454,7 +453,7 @@ func (s *initSystemSuite) TestStart(c *gc.C) {
 		// We know this is safe, because we notify on the channel we got from
 		// the patched call and everything proceeds happily.
 		s.dBus.EXPECT().StartUnit(svc.UnitName, "fail", gomock.Any()).Return(1, nil).Do(
-			func(_ ...interface{}) { s.ch <- "done" },
+			func(string, string, chan<- string) { s.ch <- "done" },
 		),
 		s.dBus.EXPECT().Close(),
 	)
@@ -509,7 +508,7 @@ func (s *initSystemSuite) TestStop(c *gc.C) {
 		// We know this is safe, because we notify on the channel we got from
 		// the patched call and everything proceeds happily.
 		s.dBus.EXPECT().StopUnit(svc.UnitName, "fail", gomock.Any()).Return(1, nil).Do(
-			func(_ ...interface{}) { s.ch <- "done" },
+			func(string, string, chan<- string) { s.ch <- "done" },
 		),
 		s.dBus.EXPECT().Close(),
 	)

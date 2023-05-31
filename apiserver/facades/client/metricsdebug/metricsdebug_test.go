@@ -23,7 +23,6 @@ type metricsDebugSuite struct {
 
 	metricsdebug *metricsdebug.MetricsDebugAPI
 	authorizer   apiservertesting.FakeAuthorizer
-	unit         *state.Unit
 }
 
 var _ = gc.Suite(&metricsDebugSuite{})
@@ -142,7 +141,7 @@ func (s *metricsDebugSuite) TestSetMeterStatus(c *gc.C) {
 		},
 		assert: func(c *gc.C, results params.ErrorResults) {
 			err := results.OneError()
-			c.Assert(err, gc.DeepEquals, &params.Error{Message: "meter status \"NOT AVAILABLE\" not valid"})
+			c.Assert(err, gc.DeepEquals, &params.Error{Message: "meter status \"NOT AVAILABLE\" not valid", Code: params.CodeNotValid})
 		},
 	}, {
 		about: "not such application",

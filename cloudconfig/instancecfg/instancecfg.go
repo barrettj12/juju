@@ -32,6 +32,7 @@ import (
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/paths"
+	"github.com/juju/juju/core/series"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/environs/imagemetadata"
 	"github.com/juju/juju/environs/tags"
@@ -53,9 +54,12 @@ type InstanceConfig struct {
 	// Controller must also be set.
 	Bootstrap *BootstrapConfig
 
-	// Controller contains controller-specific configuration. If this is
-	// set, then the instance will be configured as a controller machine.
-	Controller *ControllerConfig
+	// Controller contains configuration for the controller
+	// used to manage this new instance.
+	ControllerConfig controller.Config
+
+	// The public key used to sign Juju simplestreams image metadata.
+	PublicImageSigningKey string
 
 	// APIInfo holds the means for the new instance to communicate with the
 	// juju state API. Unless the new instance is running a controller (Controller is
@@ -129,8 +133,12 @@ type InstanceConfig struct {
 	// that it shouldn't verify SSL certificates
 	DisableSSLHostnameVerification bool
 
+	// TODO(juju3) - remove series
 	// Series represents the instance series.
 	Series string
+
+	// Base represents the instance base.
+	Base series.Base
 
 	// MachineAgentServiceName is the init service name for the Juju machine agent.
 	MachineAgentServiceName string
@@ -193,16 +201,6 @@ type InstanceConfig struct {
 	Profiles []string
 }
 
-// ControllerConfig represents controller-specific initialization information
-// for a new juju instance. This is only relevant for controller machines.
-type ControllerConfig struct {
-	// Config contains controller config attributes.
-	Config controller.Config
-
-	// The public key used to sign Juju simplestreams image metadata.
-	PublicImageSigningKey string
-}
-
 // BootstrapConfig represents bootstrap-specific initialization information
 // for a new juju instance. This is only relevant for the bootstrap machine.
 type BootstrapConfig struct {
@@ -255,11 +253,7 @@ type BootstrapConfig struct {
 }
 
 // SSHHostKeys contains the SSH host keys to configure for a bootstrap host.
-type SSHHostKeys struct {
-	// RSA, if non-nil, contains the RSA key to configure as the initial
-	// SSH host key.
-	RSA *SSHKeyPair
-}
+type SSHHostKeys []SSHKeyPair
 
 // SSHKeyPair is an SSH host key pair.
 type SSHKeyPair struct {
@@ -268,6 +262,9 @@ type SSHKeyPair struct {
 
 	// Public contains the public key in authorized_keys format.
 	Public string
+
+	// PublicKeyAlgorithm contains the public key algorithm as defined by golang.org/x/crypto/ssh KeyAlgo*
+	PublicKeyAlgorithm string
 }
 
 // StateInitializationParams contains parameters for initializing the
@@ -447,6 +444,10 @@ func (cfg *InstanceConfig) agentInfo() service.AgentInfo {
 	)
 }
 
+func (cfg *InstanceConfig) IsController() bool {
+	return model.AnyJobNeedsState(cfg.Jobs...)
+}
+
 func (cfg *InstanceConfig) ToolsDir(renderer shell.Renderer) string {
 	return cfg.agentInfo().ToolsDir(renderer)
 }
@@ -485,9 +486,9 @@ func (cfg *InstanceConfig) AgentConfig(
 		Controller:        cfg.ControllerTag,
 		Model:             cfg.APIInfo.ModelTag,
 	}
-	if cfg.Controller != nil {
-		configParams.AgentLogfileMaxBackups = cfg.Controller.Config.AgentLogfileMaxBackups()
-		configParams.AgentLogfileMaxSizeMB = cfg.Controller.Config.AgentLogfileMaxSizeMB()
+	if cfg.ControllerConfig != nil {
+		configParams.AgentLogfileMaxBackups = cfg.ControllerConfig.AgentLogfileMaxBackups()
+		configParams.AgentLogfileMaxSizeMB = cfg.ControllerConfig.AgentLogfileMaxSizeMB()
 	}
 	if cfg.Bootstrap == nil {
 		return agent.NewAgentConfig(configParams)
@@ -623,12 +624,6 @@ func (cfg *InstanceConfig) SetSnapSource(snapPath string, snapAssertionsPath str
 	return nil
 }
 
-type requiresError string
-
-func (e requiresError) Error() string {
-	return "invalid machine configuration: missing " + string(e)
-}
-
 // VerifyConfig verifies that the InstanceConfig is valid.
 func (cfg *InstanceConfig) VerifyConfig() (err error) {
 	defer errors.DeferredAnnotatef(&err, "invalid machine configuration")
@@ -687,7 +682,7 @@ func (cfg *InstanceConfig) VerifyConfig() (err error) {
 
 func (cfg *InstanceConfig) verifyBootstrapConfig() (err error) {
 	defer errors.DeferredAnnotatef(&err, "invalid bootstrap configuration")
-	if cfg.Controller == nil {
+	if cfg.ControllerConfig == nil {
 		return errors.New("bootstrap config supplied without controller config")
 	}
 	if err := cfg.Bootstrap.VerifyConfig(); err != nil {
@@ -737,11 +732,15 @@ func NewInstanceConfig(
 	controllerTag names.ControllerTag,
 	machineID,
 	machineNonce,
-	imageStream,
-	series string,
+	imageStream string,
+	base series.Base,
 	apiInfo *api.Info,
 ) (*InstanceConfig, error) {
-	osType := paths.SeriesToOS(series)
+	mseries, err := series.GetSeriesFromBase(base)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	osType := paths.SeriesToOS(mseries)
 	logDir := paths.LogDir(osType)
 	icfg := &InstanceConfig{
 		// Fixed entries.
@@ -752,7 +751,8 @@ func NewInstanceConfig(
 		CloudInitOutputLog:      path.Join(logDir, "cloud-init-output.log"),
 		TransientDataDir:        paths.TransientDataDir(osType),
 		MachineAgentServiceName: "jujud-" + names.NewMachineTag(machineID).String(),
-		Series:                  series,
+		Series:                  mseries,
+		Base:                    base,
 		Tags:                    map[string]string{},
 
 		// Parameter entries.
@@ -771,21 +771,19 @@ func NewInstanceConfig(
 func NewBootstrapInstanceConfig(
 	config controller.Config,
 	cons, modelCons constraints.Value,
-	series, publicImageSigningKey string,
+	base series.Base, publicImageSigningKey string,
 	agentEnvironment map[string]string,
 ) (*InstanceConfig, error) {
 	// For a bootstrap instance, the caller must provide the state.Info
 	// and the api.Info. The machine id must *always* be "0".
-	icfg, err := NewInstanceConfig(names.NewControllerTag(config.ControllerUUID()), agent.BootstrapControllerId, agent.BootstrapNonce, "", series, nil)
+	icfg, err := NewInstanceConfig(names.NewControllerTag(config.ControllerUUID()), agent.BootstrapControllerId, agent.BootstrapNonce, "", base, nil)
 	if err != nil {
 		return nil, err
 	}
-	icfg.Controller = &ControllerConfig{
-		PublicImageSigningKey: publicImageSigningKey,
-	}
-	icfg.Controller.Config = make(map[string]interface{})
+	icfg.PublicImageSigningKey = publicImageSigningKey
+	icfg.ControllerConfig = make(map[string]interface{})
 	for k, v := range config {
-		icfg.Controller.Config[k] = v
+		icfg.ControllerConfig[k] = v
 	}
 	icfg.Bootstrap = &BootstrapConfig{
 		StateInitializationParams: StateInitializationParams{
@@ -919,25 +917,25 @@ func FinishInstanceConfig(icfg *InstanceConfig, cfg *config.Config) (err error) 
 	); err != nil {
 		return errors.Trace(err)
 	}
-	if icfg.Controller != nil {
+	if icfg.IsController() {
 		// Add NUMACTL preference. Needed to work for both bootstrap and high availability
-		// Only makes sense for controller
-		logger.Debugf("Setting numa ctl preference to %v", icfg.Controller.Config.NUMACtlPreference())
+		// Only makes sense for controller,
+		logger.Debugf("Setting numa ctl preference to %v", icfg.ControllerConfig.NUMACtlPreference())
 		// Unfortunately, AgentEnvironment can only take strings as values
-		icfg.AgentEnvironment[agent.NUMACtlPreference] = fmt.Sprintf("%v", icfg.Controller.Config.NUMACtlPreference())
+		icfg.AgentEnvironment[agent.NUMACtlPreference] = fmt.Sprintf("%v", icfg.ControllerConfig.NUMACtlPreference())
 	}
 	return nil
 }
 
 // InstanceTags returns the minimum set of tags that should be set on a
 // machine instance, if the provider supports them.
-func InstanceTags(modelUUID, controllerUUID string, tagger tags.ResourceTagger, jobs []model.MachineJob) map[string]string {
+func InstanceTags(modelUUID, controllerUUID string, tagger tags.ResourceTagger, isController bool) map[string]string {
 	instanceTags := tags.ResourceTags(
 		names.NewModelTag(modelUUID),
 		names.NewControllerTag(controllerUUID),
 		tagger,
 	)
-	if model.AnyJobNeedsState(jobs...) {
+	if isController {
 		instanceTags[tags.JujuIsController] = "true"
 	}
 	return instanceTags

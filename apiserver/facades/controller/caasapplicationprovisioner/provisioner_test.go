@@ -7,10 +7,9 @@ import (
 	"time"
 
 	"github.com/juju/charm/v8"
-	"github.com/juju/charm/v8/resource"
+	charmresource "github.com/juju/charm/v8/resource"
 	"github.com/juju/clock"
 	"github.com/juju/clock/testclock"
-	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/version/v2"
@@ -21,9 +20,9 @@ import (
 	apiservertesting "github.com/juju/juju/apiserver/testing"
 	"github.com/juju/juju/core/config"
 	"github.com/juju/juju/core/resources"
+	jujuresource "github.com/juju/juju/core/resources"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/docker"
-	jujuresource "github.com/juju/juju/resource"
 	"github.com/juju/juju/rpc/params"
 	"github.com/juju/juju/state"
 	statetesting "github.com/juju/juju/state/testing"
@@ -214,320 +213,16 @@ func (s *CAASApplicationProvisionerSuite) TestUnits(c *gc.C) {
 	})
 }
 
-func (s *CAASApplicationProvisionerSuite) TestGarbageCollectStateful(c *gc.C) {
-	destroyOp := &state.DestroyUnitOperation{}
-	s.st.app = &mockApplication{
-		life: state.Alive,
-		charm: &mockCharm{
-			meta: &charm.Meta{
-				Deployment: &charm.Deployment{
-					DeploymentType: charm.DeploymentStateful,
-				},
-			},
-			manifest: &charm.Manifest{
-				// charm.FormatV2.
-				Bases: []charm.Base{
-					{
-						Name: "ubuntu",
-						Channel: charm.Channel{
-							Risk:  "stable",
-							Track: "20.04",
-						},
-					},
-				},
-			},
-			url: &charm.URL{
-				Schema:   "cs",
-				Name:     "gitlab",
-				Revision: -1,
-			},
-		},
-		units: []*mockUnit{
-			{
-				tag: names.NewUnitTag("gitlab/0"),
-				containerInfo: &mockCloudContainer{
-					unit:       "gitlab/0",
-					providerId: "gitlab-0",
-				},
-			},
-			{
-				tag: names.NewUnitTag("gitlab/1"),
-				containerInfo: &mockCloudContainer{
-					unit:       "gitlab/1",
-					providerId: "gitlab-1",
-				},
-				destroyOp: destroyOp,
-			},
-			{
-				tag: names.NewUnitTag("gitlab/2"),
-				containerInfo: &mockCloudContainer{
-					unit:       "gitlab/2",
-					providerId: "gitlab-2",
-				},
-			},
-		},
-	}
-	result, err := s.api.CAASApplicationGarbageCollect(params.CAASApplicationGarbageCollectArgs{
-		Args: []params.CAASApplicationGarbageCollectArg{{
-			Application:     params.Entity{Tag: "application-gitlab"},
-			ObservedUnits:   params.Entities{Entities: []params.Entity{{"unit-gitlab-0"}, {"unit-gitlab-1"}}},
-			DesiredReplicas: 1,
-			ActivePodNames:  []string{"gitlab-0"},
-			Force:           false,
-		}},
-	})
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(result.Results[0].Error, gc.IsNil)
-	s.st.CheckCallNames(c, "Application", "Model")
-	s.st.app.CheckCallNames(c, "AllUnits", "UpdateUnits")
-	s.st.model.CheckCallNames(c, "Containers")
-	c.Assert(s.st.app.Calls()[1].Args[0].(*state.UpdateUnitsOperation).Deletes, gc.HasLen, 1)
-	c.Assert(s.st.app.Calls()[1].Args[0].(*state.UpdateUnitsOperation).Deletes[0], gc.Equals, destroyOp)
-	s.st.app.units[1].CheckCallNames(c, "UpdateOperation", "DestroyOperation")
-}
-
-func (s *CAASApplicationProvisionerSuite) TestGarbageCollectDeployment(c *gc.C) {
-	c.Skip("skip for now, because of the TODO in CAASApplicationGarbageCollect facade: hardcoded deploymentType := caas.DeploymentStateful")
-
-	destroyOp := &state.DestroyUnitOperation{}
-	s.st.app = &mockApplication{
-		life: state.Alive,
-		charm: &mockCharm{
-			meta: &charm.Meta{
-				Deployment: &charm.Deployment{
-					DeploymentType: charm.DeploymentStateless,
-				},
-			},
-			manifest: &charm.Manifest{
-				// charm.FormatV2.
-				Bases: []charm.Base{
-					{
-						Name: "ubuntu",
-						Channel: charm.Channel{
-							Risk:  "stable",
-							Track: "20.04",
-						},
-					},
-				},
-			},
-			url: &charm.URL{
-				Schema:   "cs",
-				Name:     "gitlab",
-				Revision: -1,
-			},
-		},
-		units: []*mockUnit{
-			{
-				tag: names.NewUnitTag("gitlab/0"),
-				containerInfo: &mockCloudContainer{
-					unit:       "gitlab/0",
-					providerId: "gitlab-0",
-				},
-			},
-			{
-				tag: names.NewUnitTag("gitlab/1"),
-				containerInfo: &mockCloudContainer{
-					unit:       "gitlab/1",
-					providerId: "gitlab-1",
-				},
-				destroyOp: destroyOp,
-			},
-			{
-				tag: names.NewUnitTag("gitlab/2"),
-				containerInfo: &mockCloudContainer{
-					unit:       "gitlab/2",
-					providerId: "gitlab-2",
-				},
-			},
-		},
-	}
-	result, err := s.api.CAASApplicationGarbageCollect(params.CAASApplicationGarbageCollectArgs{
-		Args: []params.CAASApplicationGarbageCollectArg{{
-			Application:     params.Entity{Tag: "application-gitlab"},
-			ObservedUnits:   params.Entities{Entities: []params.Entity{{"unit-gitlab-0"}, {"unit-gitlab-1"}}},
-			DesiredReplicas: 3,
-			ActivePodNames:  []string{"gitlab-0"},
-			Force:           false,
-		}},
-	})
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(result.Results[0].Error, gc.IsNil)
-	s.st.CheckCallNames(c, "Application", "Model")
-	s.st.app.CheckCallNames(c, "AllUnits", "UpdateUnits")
-	s.st.model.CheckCallNames(c, "Containers")
-	c.Assert(s.st.app.Calls()[1].Args[0].(*state.UpdateUnitsOperation).Deletes, gc.HasLen, 1)
-	c.Assert(s.st.app.Calls()[1].Args[0].(*state.UpdateUnitsOperation).Deletes[0], gc.Equals, destroyOp)
-	s.st.app.units[1].CheckCallNames(c, "ContainerInfo", "EnsureDead", "DestroyOperation")
-}
-
-func (s *CAASApplicationProvisionerSuite) TestGarbageCollectDaemon(c *gc.C) {
-	c.Skip("skip for now, because of the TODO in CAASApplicationGarbageCollect facade: hardcoded deploymentType := caas.DeploymentStateful")
-
-	destroyOp := &state.DestroyUnitOperation{}
-	s.st.app = &mockApplication{
-		life: state.Alive,
-		charm: &mockCharm{
-			meta: &charm.Meta{
-				Deployment: &charm.Deployment{
-					DeploymentType: charm.DeploymentDaemon,
-				},
-			},
-			manifest: &charm.Manifest{
-				// charm.FormatV2.
-				Bases: []charm.Base{
-					{
-						Name: "ubuntu",
-						Channel: charm.Channel{
-							Risk:  "stable",
-							Track: "20.04",
-						},
-					},
-				},
-			},
-			url: &charm.URL{
-				Schema:   "cs",
-				Name:     "gitlab",
-				Revision: -1,
-			},
-		},
-		units: []*mockUnit{
-			{
-				tag: names.NewUnitTag("gitlab/0"),
-				containerInfo: &mockCloudContainer{
-					unit:       "gitlab/0",
-					providerId: "gitlab-0",
-				},
-			},
-			{
-				tag: names.NewUnitTag("gitlab/1"),
-				containerInfo: &mockCloudContainer{
-					unit:       "gitlab/1",
-					providerId: "gitlab-1",
-				},
-				destroyOp: destroyOp,
-			},
-			{
-				tag: names.NewUnitTag("gitlab/2"),
-				containerInfo: &mockCloudContainer{
-					unit:       "gitlab/2",
-					providerId: "gitlab-2",
-				},
-			},
-			{
-				tag: names.NewUnitTag("gitlab/3"),
-			},
-		},
-	}
-	s.st.app.units[3].SetErrors(errors.NotFoundf("cloud container"))
-	result, err := s.api.CAASApplicationGarbageCollect(params.CAASApplicationGarbageCollectArgs{
-		Args: []params.CAASApplicationGarbageCollectArg{{
-			Application:     params.Entity{Tag: "application-gitlab"},
-			ObservedUnits:   params.Entities{Entities: []params.Entity{{"unit-gitlab-0"}, {"unit-gitlab-1"}, {"unit-gitlab-3"}}},
-			DesiredReplicas: 3,
-			ActivePodNames:  []string{"gitlab-0"},
-			Force:           false,
-		}},
-	})
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(result.Results[0].Error, gc.IsNil)
-	s.st.CheckCallNames(c, "Application", "Model")
-	s.st.app.CheckCallNames(c, "Charm", "AllUnits", "UpdateUnits")
-	s.st.model.CheckCallNames(c, "Containers")
-	c.Assert(s.st.app.Calls()[2].Args[0].(*state.UpdateUnitsOperation).Deletes, gc.HasLen, 1)
-	c.Assert(s.st.app.Calls()[2].Args[0].(*state.UpdateUnitsOperation).Deletes[0], gc.Equals, destroyOp)
-	s.st.app.units[1].CheckCallNames(c, "ContainerInfo", "EnsureDead", "DestroyOperation")
-}
-
-func (s *CAASApplicationProvisionerSuite) TestGarbageCollectForced(c *gc.C) {
-	destroyOp := &state.DestroyUnitOperation{}
-	s.st.app = &mockApplication{
-		life: state.Dying,
-		charm: &mockCharm{
-			meta: &charm.Meta{
-				Deployment: &charm.Deployment{
-					DeploymentType: charm.DeploymentDaemon,
-				},
-			},
-			manifest: &charm.Manifest{
-				// charm.FormatV2.
-				Bases: []charm.Base{
-					{
-						Name: "ubuntu",
-						Channel: charm.Channel{
-							Risk:  "stable",
-							Track: "20.04",
-						},
-					},
-				},
-			},
-			url: &charm.URL{
-				Schema:   "cs",
-				Name:     "gitlab",
-				Revision: -1,
-			},
-		},
-		units: []*mockUnit{
-			{
-				tag: names.NewUnitTag("gitlab/0"),
-				containerInfo: &mockCloudContainer{
-					unit:       "gitlab/0",
-					providerId: "gitlab-0",
-				},
-				destroyOp: destroyOp,
-			},
-			{
-				tag: names.NewUnitTag("gitlab/1"),
-				containerInfo: &mockCloudContainer{
-					unit:       "gitlab/1",
-					providerId: "gitlab-1",
-				},
-				destroyOp: destroyOp,
-			},
-			{
-				tag: names.NewUnitTag("gitlab/2"),
-				containerInfo: &mockCloudContainer{
-					unit:       "gitlab/2",
-					providerId: "gitlab-2",
-				},
-				destroyOp: destroyOp,
-			},
-			{
-				tag:       names.NewUnitTag("gitlab/3"),
-				destroyOp: destroyOp,
-			},
-		},
-	}
-	result, err := s.api.CAASApplicationGarbageCollect(params.CAASApplicationGarbageCollectArgs{
-		Args: []params.CAASApplicationGarbageCollectArg{{
-			Application:     params.Entity{Tag: "application-gitlab"},
-			ObservedUnits:   params.Entities{Entities: []params.Entity{{"unit-gitlab-0"}, {"unit-gitlab-1"}, {"unit-gitlab-3"}}},
-			DesiredReplicas: 3,
-			ActivePodNames:  []string{"gitlab-0"},
-			Force:           true,
-		}},
-	})
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(result.Results[0].Error, gc.IsNil)
-	s.st.CheckCallNames(c, "Application", "Model")
-	s.st.app.CheckCallNames(c, "AllUnits", "UpdateUnits")
-	s.st.model.CheckCallNames(c, "Containers")
-	c.Assert(s.st.app.Calls()[1].Args[0].(*state.UpdateUnitsOperation).Deletes, gc.HasLen, 4)
-	c.Assert(s.st.app.Calls()[1].Args[0].(*state.UpdateUnitsOperation).Deletes[0], gc.Equals, destroyOp)
-	c.Assert(s.st.app.Calls()[1].Args[0].(*state.UpdateUnitsOperation).Deletes[1], gc.Equals, destroyOp)
-	c.Assert(s.st.app.Calls()[1].Args[0].(*state.UpdateUnitsOperation).Deletes[2], gc.Equals, destroyOp)
-	c.Assert(s.st.app.Calls()[1].Args[0].(*state.UpdateUnitsOperation).Deletes[3], gc.Equals, destroyOp)
-}
-
 func (s *CAASApplicationProvisionerSuite) TestApplicationOCIResources(c *gc.C) {
 	s.st.app = &mockApplication{
 		tag:  names.NewApplicationTag("gitlab"),
 		life: state.Alive,
 		charm: &mockCharm{
 			meta: &charm.Meta{
-				Resources: map[string]resource.Meta{
+				Resources: map[string]charmresource.Meta{
 					"gitlab-image": {
 						Name: "gitlab-image",
-						Type: resource.TypeContainerImage,
+						Type: charmresource.TypeContainerImage,
 					},
 				},
 			},
@@ -656,9 +351,14 @@ func (s *CAASApplicationProvisionerSuite) TestUpdateApplicationsUnitsWithStorage
 
 	args := params.UpdateApplicationUnitArgs{
 		Args: []params.UpdateApplicationUnits{
-			{ApplicationTag: "application-gitlab", Units: units},
+			{
+				ApplicationTag: "application-gitlab",
+				Units:          units,
+				Status:         params.EntityStatus{Status: status.Active, Info: "working"},
+			},
 		},
 	}
+
 	results, err := s.api.UpdateApplicationsUnits(args)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(results.Results[0], gc.DeepEquals, params.UpdateApplicationUnitResult{
@@ -669,7 +369,10 @@ func (s *CAASApplicationProvisionerSuite) TestUpdateApplicationsUnitsWithStorage
 			},
 		},
 	})
-	s.st.app.CheckCallNames(c, "Life", "AllUnits", "UpdateUnits", "Name")
+	s.st.app.CheckCallNames(c, "Life", "SetOperatorStatus", "AllUnits", "UpdateUnits", "Name")
+	now := s.clock.Now()
+	s.st.app.CheckCall(c, 1, "SetOperatorStatus",
+		status.StatusInfo{Status: status.Active, Message: "working", Since: &now})
 	s.st.app.units[0].CheckCallNames(c, "UpdateOperation")
 	s.st.app.units[0].CheckCall(c, 0, "UpdateOperation", state.UnitUpdateProperties{
 		ProviderId: strPtr("gitlab-0"),
@@ -697,7 +400,6 @@ func (s *CAASApplicationProvisionerSuite) TestUpdateApplicationsUnitsWithStorage
 	s.storage.CheckCall(c, 2, "UnitStorageAttachments", names.NewUnitTag("gitlab/1"))
 	s.storage.CheckCall(c, 3, "StorageInstance", names.NewStorageTag("data/1"))
 
-	now := s.clock.Now()
 	s.storage.CheckCall(c, 6, "SetVolumeInfo",
 		names.NewVolumeTag("1"),
 		state.VolumeInfo{
@@ -912,4 +614,34 @@ func (s *CAASApplicationProvisionerSuite) TestWatchUnits(c *gc.C) {
 	c.Assert(results.Results[0].Changes, jc.DeepEquals, []string{"gitlab/0", "gitlab/1"})
 	res := s.resources.Get("1")
 	c.Assert(res, gc.Equals, s.st.app.unitsWatcher)
+}
+
+func (s *CAASApplicationProvisionerSuite) TestProvisioningState(c *gc.C) {
+	s.st.app = &mockApplication{
+		life:              state.Alive,
+		provisioningState: nil,
+	}
+
+	result, err := s.api.ProvisioningState(params.Entity{Tag: "application-gitlab"})
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(result.ProvisioningState, gc.IsNil)
+
+	setResult, err := s.api.SetProvisioningState(params.CAASApplicationProvisioningStateArg{
+		Application: params.Entity{Tag: "application-gitlab"},
+		ProvisioningState: params.CAASApplicationProvisioningState{
+			Scaling:     true,
+			ScaleTarget: 10,
+		},
+	})
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(setResult.Error, gc.IsNil)
+
+	result, err = s.api.ProvisioningState(params.Entity{Tag: "application-gitlab"})
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(result.ProvisioningState, jc.DeepEquals, &params.CAASApplicationProvisioningState{
+		Scaling:     true,
+		ScaleTarget: 10,
+	})
+
+	s.st.app.Stub.CheckCallNames(c, "ProvisioningState", "SetProvisioningState", "ProvisioningState")
 }

@@ -13,13 +13,14 @@ import (
 	"github.com/juju/loggo"
 	"github.com/juju/names/v4"
 
-	"github.com/juju/juju/api/agent/secretsmanager"
 	"github.com/juju/juju/api/agent/uniter"
 	"github.com/juju/juju/core/leadership"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/rpc/params"
 	"github.com/juju/juju/worker/uniter/hook"
+	"github.com/juju/juju/worker/uniter/runner/context/payloads"
+	"github.com/juju/juju/worker/uniter/runner/context/resources"
 	"github.com/juju/juju/worker/uniter/runner/jujuc"
 )
 
@@ -66,10 +67,11 @@ type RelationsFunc func() map[int]*RelationInfo
 
 type contextFactory struct {
 	// API connection fields; unit should be deprecated, but isn't yet.
-	unit    *uniter.Unit
-	state   *uniter.State
-	secrets *secretsmanager.Client
-	tracker leadership.Tracker
+	unit      *uniter.Unit
+	state     *uniter.State
+	resources *uniter.ResourcesFacadeClient
+	payloads  *uniter.PayloadFacadeClient
+	tracker   leadership.Tracker
 
 	logger loggo.Logger
 
@@ -79,7 +81,6 @@ type contextFactory struct {
 	modelName  string
 	modelType  model.ModelType
 	machineTag names.MachineTag
-	storage    StorageContextAccessor
 	clock      Clock
 	zone       string
 	principal  string
@@ -96,11 +97,11 @@ type contextFactory struct {
 // for the context factory.
 type FactoryConfig struct {
 	State            *uniter.State
-	Secrets          *secretsmanager.Client
 	Unit             *uniter.Unit
+	Resources        *uniter.ResourcesFacadeClient
+	Payloads         *uniter.PayloadFacadeClient
 	Tracker          leadership.Tracker
 	GetRelationInfos RelationsFunc
-	Storage          StorageContextAccessor
 	Paths            Paths
 	Clock            Clock
 	Logger           loggo.Logger
@@ -138,7 +139,8 @@ func NewContextFactory(config FactoryConfig) (ContextFactory, error) {
 	f := &contextFactory{
 		unit:             config.Unit,
 		state:            config.State,
-		secrets:          config.Secrets,
+		resources:        config.Resources,
+		payloads:         config.Payloads,
 		tracker:          config.Tracker,
 		logger:           config.Logger,
 		paths:            config.Paths,
@@ -147,7 +149,6 @@ func NewContextFactory(config FactoryConfig) (ContextFactory, error) {
 		machineTag:       machineTag,
 		getRelationInfos: config.GetRelationInfos,
 		relationCaches:   map[int]*RelationCache{},
-		storage:          config.Storage,
 		rand:             rand.New(rand.NewSource(time.Now().Unix())),
 		clock:            config.Clock,
 		zone:             zone,
@@ -173,7 +174,6 @@ func (f *contextFactory) coreContext() (*HookContext, error) {
 	ctx := &HookContext{
 		unit:               f.unit,
 		state:              f.state,
-		secretFacade:       f.secrets,
 		LeadershipContext:  leadershipContext,
 		uuid:               f.modelUUID,
 		modelName:          f.modelName,
@@ -182,14 +182,22 @@ func (f *contextFactory) coreContext() (*HookContext, error) {
 		assignedMachineTag: f.machineTag,
 		relations:          f.getContextRelations(),
 		relationId:         -1,
-		storage:            f.storage,
 		clock:              f.clock,
 		logger:             f.logger,
-		componentDir:       f.paths.ComponentDir,
-		componentFuncs:     registeredComponentFuncs,
 		availabilityZone:   f.zone,
 		principal:          f.principal,
+		ResourcesHookContext: &resources.ResourcesHookContext{
+			Client:       f.resources,
+			ResourcesDir: f.paths.GetResourcesDir(),
+			Logger:       f.logger,
+		},
+		storageAttachmentCache: make(map[names.StorageTag]jujuc.ContextStorageAttachment),
 	}
+	payloadCtx, err := payloads.NewContext(f.payloads)
+	if err != nil {
+		return nil, err
+	}
+	ctx.PayloadsHookContext = payloadCtx
 	if err := f.updateContext(ctx); err != nil {
 		return nil, err
 	}
@@ -238,14 +246,16 @@ func (f *contextFactory) HookContext(hookInfo hook.Info) (*HookContext, error) {
 	}
 	if hookInfo.Kind.IsStorage() {
 		ctx.storageTag = names.NewStorageTag(hookInfo.StorageId)
-		if _, err := ctx.storage.Storage(ctx.storageTag); err != nil {
-			return nil, errors.Annotatef(err, "could not retrieve storage for id: %v", hookInfo.StorageId)
-		}
 		storageName, err := names.StorageName(hookInfo.StorageId)
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
 		hookName = fmt.Sprintf("%s-%s", storageName, hookName)
+		// Cache the storage this hook context is for.
+		_, err = ctx.Storage(ctx.storageTag)
+		if err != nil && !errors.Is(err, errors.NotProvisioned) {
+			return nil, errors.Annotatef(err, "could not retrieve storage for id: %v", hookInfo.StorageId)
+		}
 	}
 	if hookInfo.Kind.IsWorkload() {
 		ctx.workloadName = hookInfo.WorkloadName
@@ -253,9 +263,6 @@ func (f *contextFactory) HookContext(hookInfo hook.Info) (*HookContext, error) {
 	}
 	if hookInfo.Kind == hooks.PreSeriesUpgrade {
 		ctx.seriesUpgradeTarget = hookInfo.SeriesUpgradeTarget
-	}
-	if hookInfo.Kind.IsSecret() {
-		ctx.secretURL = hookInfo.SecretURL
 	}
 	ctx.id = f.newId(hookName)
 	ctx.hookName = hookName

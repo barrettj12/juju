@@ -1,5 +1,6 @@
 // Copyright 2016 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
+
 package model
 
 import (
@@ -43,26 +44,45 @@ model is deployed.
 If the controller host more then one cloud, the cloud (and optionally region)
 must be specified.
 
-Model defaults yaml configuration can be piped from stdin from the output of
-the command stdout. Some model-defaults configuration are read-only, to prevent
+Model defaults yaml configuration can be piped from stdin from the output in
+yaml format of the command stdout.
+
+Some model-defaults configuration are read-only, to prevent
 the command exiting on read-only fields, setting "ignore-read-only-fields" will
 cause it to skip over the fields when they're encountered.
 
 Examples:
+
+Display all model config default values
     juju model-defaults
+
+Display the value of http-proxy model config default
     juju model-defaults http-proxy
+
+Display the value of http-proxy model config default for the aws cloud
     juju model-defaults aws http-proxy
+
+Display the value of http-proxy model config default for the aws cloud
+and us-east-1 region
     juju model-defaults aws/us-east-1 http-proxy
+
+Display the value of http-proxy model config default for the us-east-1 region
     juju model-defaults us-east-1 http-proxy
+
+Set the value of ftp-proxy model config default to 10.0.0.1:8000
     juju model-defaults ftp-proxy=10.0.0.1:8000
-    juju model-defaults aws ftp-proxy=10.0.0.1:8000
-    juju model-defaults aws/us-east-1 ftp-proxy=10.0.0.1:8000
-    juju model-defaults us-east-1 ftp-proxy=10.0.0.1:8000
+
+Set model default values for the us-east-1 region as defined in
+path/to/file.yaml and ftp-proxy on the command line
     juju model-defaults us-east-1 ftp-proxy=10.0.0.1:8000 path/to/file.yaml
-    juju model-defaults us-east-1 path/to/file.yaml    
-    juju model-defaults --reset default-series test-mode
-    juju model-defaults aws --reset http-proxy
-    juju model-defaults aws/us-east-1 --reset http-proxy
+
+Set model default values for the aws cloud as defined in path/to/file.yaml
+    juju model-defaults aws path/to/file.yaml
+
+Reset the value of default-series and test-mode to default
+    juju model-defaults --reset default-series,test-mode
+
+Reset the value of http-proxy for the us-east-1 region to default
     juju model-defaults us-east-1 --reset http-proxy
 
 See also:
@@ -91,16 +111,16 @@ type defaultAttrs map[string]interface{}
 // type to the more simple type. This is because the output of this command
 // outputs in the following format:
 //
-//     resource-name:
-//        default: foo
-//        controller: baz
-//        regions:
-//        - name: cloud-region-name
-//          value: bar
+//	resource-name:
+//	   default: foo
+//	   controller: baz
+//	   regions:
+//	   - name: cloud-region-name
+//	     value: bar
 //
 // Where the consuming side of the command expects it in the following format:
 //
-//     resource-name: bar
+//	resource-name: bar
 //
 // CoerceFormat attempts to diagnose this and attempt to do this correctly.
 func (a defaultAttrs) CoerceFormat(region string) (defaultAttrs, error) {
@@ -292,35 +312,41 @@ func (c *defaultsCommand) Run(ctx *cmd.Context) error {
 // the examples.
 //
 // This sets foo=baz and unsets bar in aws/us-east-1
-//     juju model-defaults aws/us-east-1 foo=baz --reset bar
+//
+//	juju model-defaults aws/us-east-1 foo=baz --reset bar
 //
 // If aws is the cloud of the current or specified controller -- specified by
 // -c somecontroller -- then the following would also be equivalent.
-//     juju model-defaults --reset bar us-east-1 foo=baz
+//
+//	juju model-defaults --reset bar us-east-1 foo=baz
 //
 // If one doesn't specify a cloud or region the command is still valid but for
 // setting the default on the controller:
-//     juju model-defaults foo=baz --reset bar
+//
+//	juju model-defaults foo=baz --reset bar
 //
 // Of course one can specify multiple keys to reset --reset a,b,c and one can
 // also specify multiple values to set a=b c=d e=f. I.e. comma separated for
 // resetting and space separated for setting. One may also only set or reset as
 // a singular action.
-//     juju model-defaults --reset foo
-//     juju model-defaults a=b c=d e=f
-//     juju model-defaults a=b c=d --reset e,f
+//
+//	juju model-defaults --reset foo
+//	juju model-defaults a=b c=d e=f
+//	juju model-defaults a=b c=d --reset e,f
 //
 // cloud/region may also be specified so above examples with that option might
 // be like the following invocation.
-//     juju model-defaults us-east-1 a=b c=d --reset e,f
+//
+//	juju model-defaults us-east-1 a=b c=d --reset e,f
 //
 // Finally one can also ask for the all the defaults or the defaults for one
 // specific setting. In this case specifying a region is not valid as
 // model-defaults shows the settings for a value at all locations that it has a
 // default set -- or at a minimum the default and  "-" for a controller with no
 // value set.
-//     juju model-defaults
-//     juju model-defaults no-proxy
+//
+//	juju model-defaults
+//	juju model-defaults no-proxy
 //
 // It is not valid to reset and get or to set and get values. It is also
 // neither valid to reset and set the same key, nor to set the same key to

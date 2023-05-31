@@ -36,7 +36,7 @@ $ sudo apt install python-simplestreams
 The `./assess` script encapsulates the creating of yaml and env vars which can be further seen below, by setting some sane defaults 
 which you have to set yourself else.
 
-Defaults currently are:  `(lxd, bionic, tempdir..)`. Those can be changed during each run by setting the respective parameter.
+Defaults currently are:  `(lxd, jammy, tempdir..)`. Those can be changed during each run by setting the respective parameter.
 
 
 To run `assess_min_version.py` test locally with lxd and locally compiled juju:
@@ -58,8 +58,8 @@ The script is parameter-rich and should be able to accept any tweaks that you wa
 
 Further description can be found here in discourse:
 
-here: [discourse-link](https://discourse.jujucharms.com/t/call-for-testing-running-acceptance-tests-locally-and-easily/1449)
-and here: [discourse-link](https://discourse.jujucharms.com/t/wip-juju-acceptance-testing-primer/1482)
+here: [discourse-link](https://discourse.charmhub.io/t/call-for-testing-running-acceptance-tests-locally-and-easily/1449)
+and here: [discourse-link](https://discourse.charmhub.io/t/wip-juju-acceptance-testing-primer/1482)
 
 ### Quick run using LXD
 To run a test locally with lxd and locally complied juju:
@@ -72,7 +72,7 @@ To run a test locally with lxd and locally complied juju:
         lxd:
             type: lxd
             test-mode: true
-            default-series: bionic
+            default-series: jammy
     ```
   * ```export JUJU_REPOSITORY=$GOPATH/src/github.com/juju/juju/acceptancetests/repository```
   * ```mkdir /tmp/artifacts```
@@ -84,7 +84,7 @@ To run a test locally with lxd and locally complied juju:
      * ```$ ./assess_model_migration.py lxd . . .```
 
 Alternatively one can run: 
-` ./assess model_migration` which sets the environments with some defaults `(lxd, bionic, tempdir..)` and respective folders.
+` ./assess model_migration` which sets the environments with some defaults `(lxd, jammy, tempdir..)` and respective folders.
 ### Quick run using AWS
 
 See [(Use of environments.yaml below)](#envs) and [(Use of credentials.yaml below)](#envs-creds) for a full explanation of the files used here.
@@ -99,7 +99,7 @@ To run a test using AWS and locally complied juju:
         myaws:
             type: ec2
             test-mode: true
-            default-series: bionic
+            default-series: jammy
             region: us-east-1
     ```
   * ```$ vim $JUJU_HOME/credentials.yaml```
@@ -200,7 +200,7 @@ environments:
     testing123:
         type: lxd
         test-mode: true
-        default-series: bionic
+        default-series: jammy
         # You can use config like this too:
         # agent-metadata-url: https://custom.streams.bucket.com
 ```

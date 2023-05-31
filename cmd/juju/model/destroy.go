@@ -152,6 +152,9 @@ func (c *destroyCommand) SetFlags(f *gnuflag.FlagSet) {
 	c.ModelCommandBase.SetFlags(f)
 	f.BoolVar(&c.assumeYes, "y", false, "Do not prompt for confirmation")
 	f.BoolVar(&c.assumeYes, "yes", false, "")
+	// This unused var is declared to pass a valid ptr into BoolVar
+	var noPromptHolder bool
+	f.BoolVar(&noPromptHolder, "no-prompt", false, "Does nothing. Option present for forward compatibility with Juju 3")
 	f.DurationVar(&c.timeout, "t", defaultTimeout, "Timeout before model destruction is aborted")
 	f.DurationVar(&c.timeout, "timeout", defaultTimeout, "")
 	f.BoolVar(&c.destroyStorage, "destroy-storage", false, "Destroy all storage instances in the model")
@@ -401,14 +404,6 @@ type modelData struct {
 	errorCount       int
 }
 
-func (data *modelData) isEmpty() bool {
-	return data.errorCount == 0 &&
-		data.machineCount == 0 &&
-		data.applicationCount == 0 &&
-		data.volumeCount == 0 &&
-		data.filesystemCount == 0
-}
-
 func waitForModelDestroyed(
 	ctx *cmd.Context,
 	api DestroyModelAPI,
@@ -515,7 +510,7 @@ func (s modelResourceErrorStatusSummary) PrettyPrint(writer io.Writer) error {
 The following errors were encountered during destroying the model.
 You can fix the problem causing the errors and run destroy-model again.
 `)
-	w.Println("Resource", "Id", "Message")
+	w.Println("Resource", "ID", "Message")
 	for _, resources := range []map[string][]modelResourceErrorStatus{
 		{"Machine": s.Machines},
 		{"Filesystem": s.Filesystems},

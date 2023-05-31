@@ -17,6 +17,7 @@ import (
 	"github.com/juju/juju/api/base"
 	caasfirewallerapi "github.com/juju/juju/api/controller/caasfirewaller"
 	caasunitprovisionerapi "github.com/juju/juju/api/controller/caasunitprovisioner"
+	controllerlifeflag "github.com/juju/juju/api/controller/lifeflag"
 	"github.com/juju/juju/apiserver/apiserverhttp"
 	"github.com/juju/juju/caas"
 	"github.com/juju/juju/cmd/jujud/agent/engine"
@@ -45,6 +46,7 @@ import (
 	"github.com/juju/juju/worker/common"
 	"github.com/juju/juju/worker/credentialvalidator"
 	"github.com/juju/juju/worker/environ"
+	"github.com/juju/juju/worker/environupgrader"
 	"github.com/juju/juju/worker/firewaller"
 	"github.com/juju/juju/worker/fortress"
 	"github.com/juju/juju/worker/gate"
@@ -58,7 +60,6 @@ import (
 	"github.com/juju/juju/worker/metricworker"
 	"github.com/juju/juju/worker/migrationflag"
 	"github.com/juju/juju/worker/migrationmaster"
-	"github.com/juju/juju/worker/modelupgrader"
 	"github.com/juju/juju/worker/provisioner"
 	"github.com/juju/juju/worker/pruner"
 	"github.com/juju/juju/worker/remoterelations"
@@ -174,7 +175,9 @@ func commonManifolds(config ManifoldsConfig) dependency.Manifolds {
 			Result:        life.IsNotDead,
 			Filter:        LifeFilter,
 
-			NewFacade: lifeflag.NewFacade,
+			NewFacade: func(b base.APICaller) (lifeflag.Facade, error) {
+				return controllerlifeflag.NewClient(b), nil
+			},
 			NewWorker: lifeflag.NewWorker,
 			// No Logger defined in lifeflag package.
 		}),
@@ -184,7 +187,9 @@ func commonManifolds(config ManifoldsConfig) dependency.Manifolds {
 			Result:        life.IsNotAlive,
 			Filter:        LifeFilter,
 
-			NewFacade: lifeflag.NewFacade,
+			NewFacade: func(b base.APICaller) (lifeflag.Facade, error) {
+				return controllerlifeflag.NewClient(b), nil
+			},
 			NewWorker: lifeflag.NewWorker,
 			// No Logger defined in lifeflag package.
 		}),
@@ -316,9 +321,9 @@ func commonManifolds(config ManifoldsConfig) dependency.Manifolds {
 		// which is the agent that will run the upgrade steps;
 		// the other controller agents will wait for it to complete
 		// running those steps before allowing logins to the model.
-		modelUpgradeGateName: gate.Manifold(),
-		modelUpgradedFlagName: gate.FlagManifold(gate.FlagManifoldConfig{
-			GateName:  modelUpgradeGateName,
+		environUpgradeGateName: gate.Manifold(),
+		environUpgradedFlagName: gate.FlagManifold(gate.FlagManifoldConfig{
+			GateName:  environUpgradeGateName,
 			NewWorker: gate.NewFlagWorker,
 			// No Logger defined in gate package.
 		}),
@@ -375,7 +380,7 @@ func IAASManifolds(config ManifoldsConfig) dependency.Manifolds {
 		}))),
 
 		// All the rest depend on ifNotMigrating.
-		computeProvisionerName: ifNotMigrating(ifCredentialValid(provisioner.Manifold(provisioner.ManifoldConfig{
+		computeProvisionerName: ifNotMigrating(provisioner.Manifold(provisioner.ManifoldConfig{
 			AgentName:     agentName,
 			APICallerName: apiCallerName,
 			EnvironName:   environTrackerName,
@@ -383,8 +388,8 @@ func IAASManifolds(config ManifoldsConfig) dependency.Manifolds {
 
 			NewProvisionerFunc:           provisioner.NewEnvironProvisioner,
 			NewCredentialValidatorFacade: common.NewCredentialInvalidatorFacade,
-		}))),
-		storageProvisionerName: ifNotMigrating(ifCredentialValid(storageprovisioner.ModelManifold(storageprovisioner.ModelManifoldConfig{
+		})),
+		storageProvisionerName: ifNotMigrating(storageprovisioner.ModelManifold(storageprovisioner.ModelManifoldConfig{
 			APICallerName:                apiCallerName,
 			Clock:                        config.Clock,
 			Logger:                       config.LoggingContext.GetLogger("juju.worker.storageprovisioner"),
@@ -392,8 +397,8 @@ func IAASManifolds(config ManifoldsConfig) dependency.Manifolds {
 			Model:                        modelTag,
 			NewCredentialValidatorFacade: common.NewCredentialInvalidatorFacade,
 			NewWorker:                    storageprovisioner.NewStorageProvisioner,
-		}))),
-		firewallerName: ifNotMigrating(ifCredentialValid(firewaller.Manifold(firewaller.ManifoldConfig{
+		})),
+		firewallerName: ifNotMigrating(firewaller.Manifold(firewaller.ManifoldConfig{
 			AgentName:     agentName,
 			APICallerName: apiCallerName,
 			EnvironName:   environTrackerName,
@@ -404,7 +409,7 @@ func IAASManifolds(config ManifoldsConfig) dependency.Manifolds {
 			NewFirewallerFacade:          firewaller.NewFirewallerFacade,
 			NewRemoteRelationsFacade:     firewaller.NewRemoteRelationsFacade,
 			NewCredentialValidatorFacade: common.NewCredentialInvalidatorFacade,
-		}))),
+		})),
 		charmDownloaderName: ifNotMigrating(ifCredentialValid(charmdownloader.Manifold(charmdownloader.ManifoldConfig{
 			APICallerName: apiCallerName,
 			Logger:        config.LoggingContext.GetLogger("juju.worker.charmdownloader"),
@@ -419,34 +424,34 @@ func IAASManifolds(config ManifoldsConfig) dependency.Manifolds {
 			NewWorker:     applicationscaler.New,
 			// No Logger defined in applicationscaler package.
 		})),
-		instancePollerName: ifNotMigrating(ifCredentialValid(instancepoller.Manifold(instancepoller.ManifoldConfig{
+		instancePollerName: ifNotMigrating(instancepoller.Manifold(instancepoller.ManifoldConfig{
 			APICallerName:                apiCallerName,
 			EnvironName:                  environTrackerName,
 			ClockName:                    clockName,
 			Logger:                       config.LoggingContext.GetLogger("juju.worker.instancepoller"),
 			NewCredentialValidatorFacade: common.NewCredentialInvalidatorFacade,
-		}))),
+		})),
 		metricWorkerName: ifNotMigrating(metricworker.Manifold(metricworker.ManifoldConfig{
 			APICallerName: apiCallerName,
 			Logger:        config.LoggingContext.GetLogger("juju.worker.metricworker"),
 		})),
-		machineUndertakerName: ifNotMigrating(ifCredentialValid(machineundertaker.Manifold(machineundertaker.ManifoldConfig{
+		machineUndertakerName: ifNotMigrating(machineundertaker.Manifold(machineundertaker.ManifoldConfig{
 			APICallerName:                apiCallerName,
 			EnvironName:                  environTrackerName,
 			NewWorker:                    machineundertaker.NewWorker,
 			NewCredentialValidatorFacade: common.NewCredentialInvalidatorFacade,
 			Logger:                       config.LoggingContext.GetLogger("juju.worker.machineundertaker"),
-		}))),
-		modelUpgraderName: ifNotDead(ifCredentialValid(modelupgrader.Manifold(modelupgrader.ManifoldConfig{
+		})),
+		environUpgraderName: ifNotDead(ifCredentialValid(environupgrader.Manifold(environupgrader.ManifoldConfig{
 			APICallerName:                apiCallerName,
 			EnvironName:                  environTrackerName,
-			GateName:                     modelUpgradeGateName,
+			GateName:                     environUpgradeGateName,
 			ControllerTag:                controllerTag,
 			ModelTag:                     modelTag,
-			NewFacade:                    modelupgrader.NewFacade,
-			NewWorker:                    modelupgrader.NewWorker,
+			NewFacade:                    environupgrader.NewFacade,
+			NewWorker:                    environupgrader.NewWorker,
 			NewCredentialValidatorFacade: common.NewCredentialInvalidatorFacade,
-			Logger:                       config.LoggingContext.GetLogger("juju.worker.modelupgrader"),
+			Logger:                       config.LoggingContext.GetLogger("juju.worker.environupgrader"),
 		}))),
 		instanceMutaterName: ifNotMigrating(instancemutater.ModelManifold(instancemutater.ModelManifoldConfig{
 			AgentName:     agentName,
@@ -520,14 +525,14 @@ func CAASManifolds(config ManifoldsConfig) dependency.Manifolds {
 			AgentName:     agentName,
 			APICallerName: apiCallerName,
 			BrokerName:    caasBrokerTrackerName,
-			Logger:        loggo.GetLogger("juju.worker.caasmodeloperator"),
+			Logger:        config.LoggingContext.GetLogger("juju.worker.caasmodeloperator"),
 			ModelUUID:     agentConfig.Model().Id(),
 		})),
 
 		caasmodelconfigmanagerName: ifResponsible(caasmodelconfigmanager.Manifold(caasmodelconfigmanager.ManifoldConfig{
 			APICallerName: apiCallerName,
 			BrokerName:    caasBrokerTrackerName,
-			Logger:        loggo.GetLogger("juju.worker.caasmodelconfigmanager"),
+			Logger:        config.LoggingContext.GetLogger("juju.worker.caasmodelconfigmanager"),
 			NewWorker:     caasmodelconfigmanager.NewWorker,
 			NewFacade:     caasmodelconfigmanager.NewFacade,
 			Clock:         config.Clock,
@@ -565,9 +570,9 @@ func CAASManifolds(config ManifoldsConfig) dependency.Manifolds {
 				Logger:    config.LoggingContext.GetLogger("juju.worker.caasunitprovisioner"),
 			},
 		)),
-		modelUpgraderName: caasenvironupgrader.Manifold(caasenvironupgrader.ManifoldConfig{
+		environUpgraderName: caasenvironupgrader.Manifold(caasenvironupgrader.ManifoldConfig{
 			APICallerName: apiCallerName,
-			GateName:      modelUpgradeGateName,
+			GateName:      environUpgradeGateName,
 			ModelTag:      modelTag,
 			NewFacade:     caasenvironupgrader.NewFacade,
 			NewWorker:     caasenvironupgrader.NewWorker,
@@ -659,7 +664,7 @@ var (
 	// the environ upgrade worker has completed.
 	ifNotUpgrading = engine.Housing{
 		Flags: []string{
-			modelUpgradedFlagName,
+			environUpgradedFlagName,
 		},
 	}.Decorate
 
@@ -686,9 +691,9 @@ const (
 	migrationInactiveFlagName = "migration-inactive-flag"
 	migrationMasterName       = "migration-master"
 
-	modelUpgradeGateName  = "model-upgrade-gate"
-	modelUpgradedFlagName = "model-upgraded-flag"
-	modelUpgraderName     = "model-upgrader"
+	environUpgradeGateName  = "environ-upgrade-gate"
+	environUpgradedFlagName = "environ-upgraded-flag"
+	environUpgraderName     = "environ-upgrader"
 
 	environTrackerName       = "environ-tracker"
 	undertakerName           = "undertaker"

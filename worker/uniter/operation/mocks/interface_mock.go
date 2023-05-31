@@ -6,12 +6,10 @@ package mocks
 
 import (
 	reflect "reflect"
-	time "time"
 
 	gomock "github.com/golang/mock/gomock"
-	charm "github.com/juju/charm/v8"
 	model "github.com/juju/juju/core/model"
-	charm0 "github.com/juju/juju/worker/uniter/charm"
+	charm "github.com/juju/juju/worker/uniter/charm"
 	hook "github.com/juju/juju/worker/uniter/hook"
 	operation "github.com/juju/juju/worker/uniter/operation"
 	remotestate "github.com/juju/juju/worker/uniter/remotestate"
@@ -210,7 +208,7 @@ func (mr *MockFactoryMockRecorder) NewFailAction(arg0 interface{}) *gomock.Call 
 }
 
 // NewInstall mocks base method.
-func (m *MockFactory) NewInstall(arg0 *charm.URL) (operation.Operation, error) {
+func (m *MockFactory) NewInstall(arg0 string) (operation.Operation, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "NewInstall", arg0)
 	ret0, _ := ret[0].(operation.Operation)
@@ -270,7 +268,7 @@ func (mr *MockFactoryMockRecorder) NewResignLeadership() *gomock.Call {
 }
 
 // NewResolvedUpgrade mocks base method.
-func (m *MockFactory) NewResolvedUpgrade(arg0 *charm.URL) (operation.Operation, error) {
+func (m *MockFactory) NewResolvedUpgrade(arg0 string) (operation.Operation, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "NewResolvedUpgrade", arg0)
 	ret0, _ := ret[0].(operation.Operation)
@@ -285,7 +283,7 @@ func (mr *MockFactoryMockRecorder) NewResolvedUpgrade(arg0 interface{}) *gomock.
 }
 
 // NewRevertUpgrade mocks base method.
-func (m *MockFactory) NewRevertUpgrade(arg0 *charm.URL) (operation.Operation, error) {
+func (m *MockFactory) NewRevertUpgrade(arg0 string) (operation.Operation, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "NewRevertUpgrade", arg0)
 	ret0, _ := ret[0].(operation.Operation)
@@ -345,7 +343,7 @@ func (mr *MockFactoryMockRecorder) NewSkipRemoteInit(arg0 interface{}) *gomock.C
 }
 
 // NewUpgrade mocks base method.
-func (m *MockFactory) NewUpgrade(arg0 *charm.URL) (operation.Operation, error) {
+func (m *MockFactory) NewUpgrade(arg0 string) (operation.Operation, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "NewUpgrade", arg0)
 	ret0, _ := ret[0].(operation.Operation)
@@ -426,10 +424,10 @@ func (mr *MockCallbacksMockRecorder) FailAction(arg0, arg1 interface{}) *gomock.
 }
 
 // GetArchiveInfo mocks base method.
-func (m *MockCallbacks) GetArchiveInfo(arg0 *charm.URL) (charm0.BundleInfo, error) {
+func (m *MockCallbacks) GetArchiveInfo(arg0 string) (charm.BundleInfo, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetArchiveInfo", arg0)
-	ret0, _ := ret[0].(charm0.BundleInfo)
+	ret0, _ := ret[0].(charm.BundleInfo)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -494,7 +492,7 @@ func (mr *MockCallbacksMockRecorder) RemoteInit(arg0, arg1 interface{}) *gomock.
 }
 
 // SetCurrentCharm mocks base method.
-func (m *MockCallbacks) SetCurrentCharm(arg0 *charm.URL) error {
+func (m *MockCallbacks) SetCurrentCharm(arg0 string) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "SetCurrentCharm", arg0)
 	ret0, _ := ret[0].(error)
@@ -519,20 +517,6 @@ func (m *MockCallbacks) SetExecutingStatus(arg0 string) error {
 func (mr *MockCallbacksMockRecorder) SetExecutingStatus(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetExecutingStatus", reflect.TypeOf((*MockCallbacks)(nil).SetExecutingStatus), arg0)
-}
-
-// SetSecretRotated mocks base method.
-func (m *MockCallbacks) SetSecretRotated(arg0 string, arg1 time.Time) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SetSecretRotated", arg0, arg1)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// SetSecretRotated indicates an expected call of SetSecretRotated.
-func (mr *MockCallbacksMockRecorder) SetSecretRotated(arg0, arg1 interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetSecretRotated", reflect.TypeOf((*MockCallbacks)(nil).SetSecretRotated), arg0, arg1)
 }
 
 // SetUpgradeSeriesStatus mocks base method.

@@ -1,8 +1,6 @@
 // Copyright 2015 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
-// Package cloud provides functionality to parse information
-// describing clouds, including regions, supported auth types etc.
 package cloud
 
 import (
@@ -402,23 +400,25 @@ func ParseOneCloud(data []byte) (Cloud, error) {
 // The expected regular yaml formal is:
 //
 // clouds:
-//   garage-maas:
-//     type: maas
-//     auth-types: [oauth1]
-//     endpoint: "http://garagemaas"
-//     skip-tls-verify: true`
-//   ...
+//
+//	garage-maas:
+//	  type: maas
+//	  auth-types: [oauth1]
+//	  endpoint: "http://garagemaas"
+//	  skip-tls-verify: true`
+//	...
 //
 // It also accepts a yaml format without the 'clouds' key at the top,
 // e.g.
 //
 // garage-maas:
-//   type: maas
-//   auth-types: [oauth1]
-//   endpoint: "http://garagemaas"
-//   skip-tls-verify: true`
-// ...
 //
+//	type: maas
+//	auth-types: [oauth1]
+//	endpoint: "http://garagemaas"
+//	skip-tls-verify: true`
+//
+// ...
 func ParseCloudMetadata(data []byte) (map[string]Cloud, error) {
 	var metadata cloudSet
 
@@ -481,8 +481,6 @@ var defaultCloudDescription = map[string]string{
 	"google":      "Google Cloud Platform",
 	"azure":       "Microsoft Azure",
 	"azure-china": "Microsoft Azure China",
-	"rackspace":   "Rackspace Cloud",
-	"cloudsigma":  "CloudSigma Cloud",
 	"lxd":         "LXD Container Hypervisor",
 	"maas":        "Metal As A Service",
 	"openstack":   "Openstack Cloud",

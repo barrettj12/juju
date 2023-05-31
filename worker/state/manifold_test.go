@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/juju/errors"
-	jujutesting "github.com/juju/testing"
+	mgotesting "github.com/juju/mgo/v2/testing"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/worker/v3"
 	"github.com/juju/worker/v3/dependency"
@@ -28,7 +28,6 @@ type ManifoldSuite struct {
 	openStateCalled   bool
 	openStateErr      error
 	config            workerstate.ManifoldConfig
-	agent             *mockAgent
 	resources         dt.StubResources
 	setStatePoolCalls []*state.StatePool
 }
@@ -132,7 +131,7 @@ func (s *ManifoldSuite) TestStatePinging(c *gc.C) {
 	checkNotExiting(c, w)
 
 	// Kill the mongod to cause pings to fail.
-	jujutesting.MgoServer.Destroy()
+	mgotesting.MgoServer.Destroy()
 
 	checkExitsWithError(c, w, "state ping failed: .+")
 }
@@ -162,7 +161,9 @@ func (s *ManifoldSuite) TestOutputSuccess(c *gc.C) {
 
 	pool, err := stTracker.Use()
 	c.Assert(err, jc.ErrorIsNil)
-	c.Check(pool.SystemState(), gc.Equals, s.State)
+	systemState, err := pool.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Check(systemState, gc.Equals, s.State)
 	c.Assert(stTracker.Done(), jc.ErrorIsNil)
 
 	// Ensure State is closed when the worker is done.

@@ -21,7 +21,6 @@ import (
 	"github.com/juju/utils/v3/parallel"
 	"github.com/juju/utils/v3/shell"
 	"github.com/juju/utils/v3/ssh"
-	cryptossh "golang.org/x/crypto/ssh"
 
 	"github.com/juju/juju/cloudconfig"
 	"github.com/juju/juju/cloudconfig/cloudinit"
@@ -39,6 +38,7 @@ import (
 	"github.com/juju/juju/environs/imagemetadata"
 	"github.com/juju/juju/environs/instances"
 	"github.com/juju/juju/environs/simplestreams"
+	pkissh "github.com/juju/juju/pki/ssh"
 	"github.com/juju/juju/storage"
 	"github.com/juju/juju/storage/poolmanager"
 	coretools "github.com/juju/juju/tools"
@@ -138,19 +138,23 @@ func BootstrapInstance(
 	if err != nil {
 		return nil, "", nil, err
 	}
-	envCfg := env.Config()
+	base, err := series.GetBaseFromSeries(selectedSeries)
+	if err != nil {
+		return nil, "", nil, err
+	}
 	instanceConfig, err := instancecfg.NewBootstrapInstanceConfig(
-		args.ControllerConfig, args.BootstrapConstraints, args.ModelConstraints, selectedSeries, publicKey,
+		args.ControllerConfig, args.BootstrapConstraints, args.ModelConstraints, base, publicKey,
 		args.ExtraAgentValuesForTesting,
 	)
 	if err != nil {
 		return nil, "", nil, err
 	}
-	instanceConfig.EnableOSRefreshUpdate = env.Config().EnableOSRefreshUpdate()
-	instanceConfig.EnableOSUpgrade = env.Config().EnableOSUpgrade()
-	instanceConfig.NetBondReconfigureDelay = env.Config().NetBondReconfigureDelay()
 
-	instanceConfig.Tags = instancecfg.InstanceTags(envCfg.UUID(), args.ControllerConfig.ControllerUUID(), envCfg, instanceConfig.Jobs)
+	envCfg := env.Config()
+	instanceConfig.EnableOSRefreshUpdate = envCfg.EnableOSRefreshUpdate()
+	instanceConfig.EnableOSUpgrade = envCfg.EnableOSUpgrade()
+	instanceConfig.NetBondReconfigureDelay = envCfg.NetBondReconfigureDelay()
+	instanceConfig.Tags = instancecfg.InstanceTags(envCfg.UUID(), args.ControllerConfig.ControllerUUID(), envCfg, true)
 
 	// We're creating a new instance; inject host keys so that we can then
 	// make an SSH connection with known keys.
@@ -273,7 +277,7 @@ func BootstrapInstance(
 		default:
 		}
 
-		if zone == "" || environs.IsAvailabilityZoneIndependent(err) {
+		if zone == "" || errors.Is(err, environs.ErrAvailabilityZoneIndependent) {
 			return nil, "", nil, errors.Annotate(err, "cannot start bootstrap instance")
 		}
 
@@ -498,9 +502,9 @@ func ConfigureMachine(
 // an ssh.Options and a cleanup function, or an error.
 type HostSSHOptionsFunc func(host string) (*ssh.Options, func(), error)
 
-// DefaultHostSSHOptions returns a a nil *ssh.Options, which means
+// DefaultHostSSHOptions returns a nil *ssh.Options, which means
 // to use the defaults; and a no-op cleanup function.
-func DefaultHostSSHOptions(host string) (*ssh.Options, func(), error) {
+func DefaultHostSSHOptions(string) (*ssh.Options, func(), error) {
 	return nil, func() {}, nil
 }
 
@@ -532,9 +536,9 @@ func hostBootstrapSSHOptions(
 	hostKeys := instanceConfig.Bootstrap.InitialSSHHostKeys
 	var algos []string
 	var pubKeys []string
-	if hostKeys.RSA != nil {
-		algos = append(algos, cryptossh.KeyAlgoRSA)
-		pubKeys = append(pubKeys, hostKeys.RSA.Public)
+	for _, hostKey := range hostKeys {
+		algos = append(algos, hostKey.PublicKeyAlgorithm)
+		pubKeys = append(pubKeys, hostKey.Public)
 	}
 	if len(pubKeys) == 0 {
 		return options, cleanup, nil
@@ -812,13 +816,23 @@ func generateSSHHostKeys() (instancecfg.SSHHostKeys, error) {
 	// Generate a single ssh-rsa key. We'll configure the SSH client
 	// such that that is the only host key type we'll accept.
 	var keys instancecfg.SSHHostKeys
-	private, public, err := ssh.GenerateKey("juju-bootstrap")
+
+	hostKeys, err := pkissh.GenerateHostKeys()
 	if err != nil {
-		return keys, errors.Annotate(err, "generating SSH key")
+		return nil, errors.Annotate(err, "generating SSH keys")
 	}
-	keys.RSA = &instancecfg.SSHKeyPair{
-		Private: private,
-		Public:  public,
+
+	for i, key := range hostKeys {
+		private, public, keyType, err := pkissh.FormatKey(key, fmt.Sprintf("juju-bootstrap-%d", i))
+		if err != nil {
+			return nil, errors.Annotate(err, "generating SSH key")
+		}
+
+		keys = append(keys, instancecfg.SSHKeyPair{
+			Private:            private,
+			Public:             public,
+			PublicKeyAlgorithm: keyType,
+		})
 	}
 	return keys, nil
 }

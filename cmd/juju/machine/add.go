@@ -15,6 +15,7 @@ import (
 	"github.com/juju/names/v4"
 	"github.com/juju/utils/v3/winrm"
 
+	apiclient "github.com/juju/juju/api/client/client"
 	"github.com/juju/juju/api/client/machinemanager"
 	"github.com/juju/juju/api/client/modelconfig"
 	jujucmd "github.com/juju/juju/cmd"
@@ -24,6 +25,7 @@ import (
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/model"
+	"github.com/juju/juju/core/series"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/environs/manual"
 	"github.com/juju/juju/environs/manual/sshprovisioner"
@@ -122,6 +124,18 @@ Examples:
 	# Allocate a machine to the model via SSH
 	juju add-machine ssh:user@10.10.0.3
 
+	# Allocate a machine specifying the private key to use during the connection.
+	juju add-machine ssh:user@10.10.0.3 --private-key /tmp/id_rsa
+
+	# Allocate a machine specifying a public key to set in the list of
+	# authorized keys in the machine.
+	juju add-machine ssh:user@10.10.0.3 --public-key /tmp/id_rsa.pub
+
+	# Allocate a machine specifying a public key to set in the list of
+	# authorized keys and the private key to used during the 
+	# connection
+	juju add-machine ssh:user@10.10.0.3 --public-key /tmp/id_rsa.pub --private-key /tmp/id_rsa
+
 	# Allocate a machine to the model via WinRM
 	juju add-machine winrm:user@10.10.0.3
 
@@ -147,7 +161,6 @@ func NewAddCommand() cmd.Command {
 // addCommand starts a new machine and registers it in the model.
 type addCommand struct {
 	baseMachinesCommand
-	api               AddMachineAPI
 	modelConfigAPI    ModelConfigAPI
 	machineManagerAPI MachineManagerAPI
 	// If specified, use this series, else use the model default-series
@@ -162,12 +175,18 @@ type addCommand struct {
 	NumMachines int
 	// Disks describes disks that are to be attached to the machine.
 	Disks []storage.Constraints
+	// PrivateKey is the path for a file containing the private key required
+	// by the server
+	PrivateKey string
+	// PublicKey is the path for a file containing a public key required
+	// by the server
+	PublicKey string
 }
 
 func (c *addCommand) Info() *cmd.Info {
 	return jujucmd.Info(&cmd.Info{
 		Name:    "add-machine",
-		Args:    "[<container-type>[:<machine-id>] | (ssh|winrm):[<user>@]<host> | <placement>]",
+		Args:    "[<container-type>[:<machine-id>] | (ssh|winrm):[<user>@]<host> | <placement>] | <private-key> | <public-key>",
 		Purpose: "Provision a new machine or assign one to the model.",
 		Doc:     addMachineDoc,
 	})
@@ -179,6 +198,8 @@ func (c *addCommand) SetFlags(f *gnuflag.FlagSet) {
 	f.IntVar(&c.NumMachines, "n", 1, "The number of machines to add")
 	f.StringVar(&c.ConstraintsStr, "constraints", "", "Machine constraints that overwrite those available from 'juju get-model-constraints' and provider's defaults")
 	f.Var(disksFlag{&c.Disks}, "disks", "Storage constraints for disks to attach to the machine(s)")
+	f.StringVar(&c.PrivateKey, "private-key", "", "Path to the private key to use during the connection")
+	f.StringVar(&c.PublicKey, "public-key", "", "Path to the public key to add to the remote authorized keys")
 }
 
 func (c *addCommand) Init(args []string) error {
@@ -203,15 +224,6 @@ func (c *addCommand) Init(args []string) error {
 	return nil
 }
 
-type AddMachineAPI interface {
-	AddMachines([]params.AddMachineParams) ([]params.AddMachinesResult, error)
-	Close() error
-	ForceDestroyMachines(machines ...string) error
-	DestroyMachinesWithParams(force, keep bool, machines ...string) error
-	ModelUUID() (string, bool)
-	ProvisioningScript(params.ProvisioningScriptParams) (script string, err error)
-}
-
 type ModelConfigAPI interface {
 	ModelGet() (map[string]interface{}, error)
 	Close() error
@@ -219,6 +231,9 @@ type ModelConfigAPI interface {
 
 type MachineManagerAPI interface {
 	AddMachines([]params.AddMachineParams) ([]params.AddMachinesResult, error)
+	DestroyMachinesWithParams(force, keep bool, maxWait *time.Duration, machines ...string) ([]params.DestroyMachineResult, error)
+	ModelUUID() (string, bool)
+	ProvisioningScript(params.ProvisioningScriptParams) (script string, err error)
 	BestAPIVersion() int
 	Close() error
 }
@@ -230,13 +245,6 @@ func splitUserHost(host string) (string, string) {
 		return host[:at], host[at+1:]
 	}
 	return "", host
-}
-
-func (c *addCommand) getClientAPI() (AddMachineAPI, error) {
-	if c.api != nil {
-		return c.api, nil
-	}
-	return c.NewAPIClient()
 }
 
 func (c *addCommand) getModelConfigAPI() (ModelConfigAPI, error) {
@@ -251,7 +259,7 @@ func (c *addCommand) getModelConfigAPI() (ModelConfigAPI, error) {
 
 }
 
-func (c *addCommand) NewMachineManagerClient() (*machinemanager.Client, error) {
+func (c *addCommand) newMachineManagerClient() (*machinemanager.Client, error) {
 	root, err := c.NewAPIRoot()
 	if err != nil {
 		return nil, errors.Trace(err)
@@ -263,7 +271,20 @@ func (c *addCommand) getMachineManagerAPI() (MachineManagerAPI, error) {
 	if c.machineManagerAPI != nil {
 		return c.machineManagerAPI, nil
 	}
-	return c.NewMachineManagerClient()
+	return c.newMachineManagerClient()
+}
+
+// TODO(juju3) - remove
+type manualAPIAdaptor struct {
+	*apiclient.Client
+}
+
+func (m manualAPIAdaptor) DestroyMachinesWithParams(force, keep bool, maxWait *time.Duration, machines ...string) ([]params.DestroyMachineResult, error) {
+	err := m.Client.DestroyMachinesWithParams(force, keep, machines...)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	return []params.DestroyMachineResult{}, nil
 }
 
 func (c *addCommand) Run(ctx *cmd.Context) error {
@@ -272,17 +293,22 @@ func (c *addCommand) Run(ctx *cmd.Context) error {
 	if err != nil {
 		return err
 	}
-	client, err := c.getClientAPI()
-	if err != nil {
-		return errors.Trace(err)
-	}
-	defer client.Close()
-
 	machineManager, err := c.getMachineManagerAPI()
 	if err != nil {
 		return errors.Trace(err)
 	}
 	defer machineManager.Close()
+
+	// Older controllers still have the manual provisioning
+	// methods on the client facade.
+	var manualClientAPI = machineManager
+	if machineManager.BestAPIVersion() < 7 {
+		root, err := c.NewAPIRoot()
+		if err != nil {
+			return errors.Trace(err)
+		}
+		manualClientAPI = &manualAPIAdaptor{apiclient.NewClient(root)}
+	}
 
 	if len(c.Disks) > 0 && machineManager.BestAPIVersion() < 1 {
 		return errors.New("cannot add machines with disks: not supported by the API server")
@@ -307,7 +333,7 @@ func (c *addCommand) Run(ctx *cmd.Context) error {
 	}
 
 	if c.Placement != nil {
-		err := c.tryManualProvision(client, cfg, ctx)
+		err := c.tryManualProvision(manualClientAPI, cfg, ctx)
 		if err != errNonManualScope {
 			return err
 		}
@@ -315,7 +341,7 @@ func (c *addCommand) Run(ctx *cmd.Context) error {
 
 	logger.Infof("model provisioning")
 	if c.Placement != nil && c.Placement.Scope == "model-uuid" {
-		uuid, ok := client.ModelUUID()
+		uuid, ok := machineManager.ModelUUID()
 		if !ok {
 			return errors.New("API connection is controller-only (should never happen)")
 		}
@@ -329,9 +355,25 @@ func (c *addCommand) Run(ctx *cmd.Context) error {
 
 	jobs := []model.MachineJob{model.JobHostUnits}
 
+	var base *params.Base
+	if c.Series != "" && machineManager.BestAPIVersion() >= 8 {
+		info, err := series.GetBaseFromSeries(c.Series)
+		if err != nil {
+			return errors.NotValidf("machine series %q", c.Series)
+		}
+		c.Series = ""
+		base = &params.Base{
+			Name:    info.Name,
+			Channel: info.Channel.String(),
+		}
+		if machineManager.BestAPIVersion() >= 9 {
+			base.Channel = series.FromLegacyCentosChannel(base.Channel)
+		}
+	}
 	machineParams := params.AddMachineParams{
 		Placement:   c.Placement,
 		Series:      c.Series,
+		Base:        base,
 		Constraints: c.Constraints,
 		Jobs:        jobs,
 		Disks:       c.Disks,
@@ -386,7 +428,7 @@ var (
 	winrmScope        = "winrm"
 )
 
-func (c *addCommand) tryManualProvision(client AddMachineAPI, config *config.Config, ctx *cmd.Context) error {
+func (c *addCommand) tryManualProvision(client manual.ProvisioningClientAPI, config *config.Config, ctx *cmd.Context) error {
 
 	var provisionMachine manual.ProvisionMachineFunc
 	switch c.Placement.Scope {
@@ -398,7 +440,7 @@ func (c *addCommand) tryManualProvision(client AddMachineAPI, config *config.Con
 		return errNonManualScope
 	}
 
-	authKeys, err := common.ReadAuthorizedKeys(ctx, "")
+	authKeys, err := common.ReadAuthorizedKeys(ctx, c.PublicKey)
 	if err != nil {
 		return errors.Annotatef(err, "cannot reading authorized-keys")
 	}
@@ -412,6 +454,7 @@ func (c *addCommand) tryManualProvision(client AddMachineAPI, config *config.Con
 		Stdout:         ctx.Stdout,
 		Stderr:         ctx.Stderr,
 		AuthorizedKeys: authKeys,
+		PrivateKey:     c.PrivateKey,
 		UpdateBehavior: &params.UpdateBehavior{
 			EnableOSRefreshUpdate: config.EnableOSRefreshUpdate(),
 			EnableOSUpgrade:       config.EnableOSUpgrade(),

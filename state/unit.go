@@ -77,7 +77,7 @@ type unitDoc struct {
 	ModelUUID              string `bson:"model-uuid"`
 	Application            string
 	Series                 string
-	CharmURL               *charm.URL
+	CharmURL               *string
 	Principal              string
 	Subordinates           []string
 	StorageAttachmentCount int `bson:"storageattachmentcount"`
@@ -296,18 +296,22 @@ func (u *Unit) SetPassword(password string) error {
 // to the value supplied. This is split out from SetPassword to allow direct
 // manipulation in tests (to check for backwards compatibility).
 func (u *Unit) setPasswordHash(passwordHash string) error {
-	ops := []txn.Op{{
-		C:      unitsC,
-		Id:     u.doc.DocID,
-		Assert: notDeadDoc,
-		Update: bson.D{{"$set", bson.D{{"passwordhash", passwordHash}}}},
-	}}
+	ops := u.setPasswordHashOps(passwordHash)
 	err := u.st.db().RunTransaction(ops)
 	if err != nil {
 		return fmt.Errorf("cannot set password of unit %q: %v", u, onAbort(err, stateerrors.ErrDead))
 	}
 	u.doc.PasswordHash = passwordHash
 	return nil
+}
+
+func (u *Unit) setPasswordHashOps(passwordHash string) []txn.Op {
+	return []txn.Op{{
+		C:      unitsC,
+		Id:     u.doc.DocID,
+		Assert: notDeadDoc,
+		Update: bson.D{{"$set", bson.D{{"passwordhash", passwordHash}}}},
+	}}
 }
 
 // PasswordValid returns whether the given password is valid
@@ -363,7 +367,7 @@ type UpdateUnitOperation struct {
 }
 
 // Build is part of the ModelOperation interface.
-func (op *UpdateUnitOperation) Build(attempt int) ([]txn.Op, error) {
+func (op *UpdateUnitOperation) Build(_ int) ([]txn.Op, error) {
 	op.setStatusDocs = make(map[string]statusDoc)
 
 	containerInfo, err := op.unit.cloudContainer()
@@ -695,35 +699,30 @@ func (op *DestroyUnitOperation) destroyOps() ([]txn.Op, error) {
 			return nil, errors.Trace(agentErr)
 		}
 	}
-	unitStatusDocId := op.unit.globalKey()
-	unitStatusInfo, unitErr := getStatus(op.unit.st.db(), unitStatusDocId, "unit")
-	if errors.IsNotFound(unitErr) {
-		return nil, errAlreadyDying
-	} else if unitErr != nil {
-		if !op.Force {
-			return nil, errors.Trace(unitErr)
-		}
-	}
 
 	// This has to be a function since we want to delay the evaluation of the value,
 	// in case agent erred out.
-	notAllocating := func() bool {
+	isReady := func() (bool, error) {
 		// IAAS models need the unit to be assigned.
 		if shouldBeAssigned {
-			return isAssigned && agentStatusInfo.Status != status.Allocating
+			return isAssigned && agentStatusInfo.Status != status.Allocating, nil
 		}
-		// For CAAS models, check to see if the unit agent has started.
-		if agentStatusInfo.Status != status.Allocating {
-			return true
+		// For CAAS models, check to see if the unit agent has started (the
+		// presence of the unitstates row indicates this).
+		unitState, err := op.unit.State()
+		if err != nil {
+			return false, errors.Trace(err)
 		}
-		// If the agent is still allocating, it may still be queued to run the install hook
-		// so check that the unit agent has started.
-		return (unitStatusInfo.Status != "" && unitStatusInfo.Status != status.Waiting) ||
-			(unitStatusInfo.Message != status.MessageWaitForContainer &&
-				unitStatusInfo.Message != status.MessageInstallingAgent)
+		return unitState.Modified(), nil
 	}
-	if agentErr == nil && notAllocating() {
-		return setDyingOps(agentErr)
+	if agentErr == nil {
+		ready, err := isReady()
+		if op.FatalError(err) {
+			return nil, errors.Trace(err)
+		}
+		if ready {
+			return setDyingOps(agentErr)
+		}
 	}
 	switch agentStatusInfo.Status {
 	case status.Error, status.Allocating:
@@ -739,7 +738,11 @@ func (op *DestroyUnitOperation) destroyOps() ([]txn.Op, error) {
 		Id:     op.unit.st.docID(agentStatusDocId),
 		Assert: bson.D{{"status", agentStatusInfo.Status}},
 	}
-	removeAsserts := append(isAliveDoc, bson.DocElem{
+	removeAsserts := isAliveDoc
+	if op.Force {
+		removeAsserts = bson.D{{"life", op.unit.doc.Life}}
+	}
+	removeAsserts = append(removeAsserts, bson.DocElem{
 		"$and", []bson.D{
 			unitHasNoSubordinates,
 			unitHasNoStorageAttachments,
@@ -1049,7 +1052,7 @@ func (op *RemoveUnitOperation) removeOps() (ops []txn.Op, err error) {
 	// EnsureDead does not require that it already be Dying, so this is the
 	// only point at which we can safely backstop lp:1233457 and mitigate
 	// the impact of unit agent bugs that leave relation scopes occupied).
-	relations, err := applicationRelations(op.unit.st, op.unit.doc.Application)
+	relations, err := matchingRelations(op.unit.st, op.unit.doc.Application)
 	if op.FatalError(err) {
 		return nil, err
 	} else {
@@ -1120,7 +1123,7 @@ type relationPredicate func(ru *RelationUnit) (bool, error)
 
 // relations implements RelationsJoined and RelationsInScope.
 func (u *Unit) relations(predicate relationPredicate) ([]*Relation, error) {
-	candidates, err := applicationRelations(u.st, u.doc.Application)
+	candidates, err := matchingRelations(u.st, u.doc.Application)
 	if err != nil {
 		return nil, err
 	}
@@ -1330,14 +1333,14 @@ func (u *Unit) Agent() *UnitAgent {
 }
 
 // AgentHistory returns an StatusHistoryGetter which can
-//be used to query the status history of the unit's agent.
+// be used to query the status history of the unit's agent.
 func (u *Unit) AgentHistory() status.StatusHistoryGetter {
 	return u.Agent()
 }
 
 // SetAgentStatus calls SetStatus for this unit's agent, this call
 // is equivalent to the former call to SetStatus when Agent and Unit
-// where not separate entities.
+// were not separate entities.
 func (u *Unit) SetAgentStatus(agentStatus status.StatusInfo) error {
 	agent := newUnitAgent(u.st, u.Tag(), u.Name())
 	s := status.StatusInfo{
@@ -1351,7 +1354,7 @@ func (u *Unit) SetAgentStatus(agentStatus status.StatusInfo) error {
 
 // AgentStatus calls Status for this unit's agent, this call
 // is equivalent to the former call to Status when Agent and Unit
-// where not separate entities.
+// were not separate entities.
 func (u *Unit) AgentStatus() (status.StatusInfo, error) {
 	agent := newUnitAgent(u.st, u.Tag(), u.Name())
 	return agent.Status()
@@ -1459,11 +1462,8 @@ func (u *Unit) OpenedPortRanges() (UnitPortRanges, error) {
 }
 
 // CharmURL returns the charm URL this unit is currently using.
-func (u *Unit) CharmURL() (*charm.URL, bool) {
-	if u.doc.CharmURL == nil {
-		return nil, false
-	}
-	return u.doc.CharmURL, true
+func (u *Unit) CharmURL() *string {
+	return u.doc.CharmURL
 }
 
 // SetCharmURL marks the unit as currently using the supplied charm URL.
@@ -1493,7 +1493,7 @@ func (u *Unit) SetCharmURL(curl *charm.URL) error {
 				return nil, stateerrors.ErrDead
 			}
 		}
-		sel := bson.D{{"_id", u.doc.DocID}, {"charmurl", curl}}
+		sel := bson.D{{"_id", u.doc.DocID}, {"charmurl", curl.String()}}
 		if count, err := units.Find(sel).Count(); err != nil {
 			return nil, errors.Trace(err)
 		} else if count == 1 {
@@ -1507,31 +1507,34 @@ func (u *Unit) SetCharmURL(curl *charm.URL) error {
 		}
 
 		// Add a reference to the application settings for the new charm.
-		incOps, err := appCharmIncRefOps(u.st, u.doc.Application, curl, false)
+		cURL := curl.String()
+		incOps, err := appCharmIncRefOps(u.st, u.doc.Application, &cURL, false)
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
 
 		// Set the new charm URL.
-		differentCharm := bson.D{{"charmurl", bson.D{{"$ne", curl}}}}
+		differentCharm := bson.D{{"charmurl", bson.D{{"$ne", curl.String()}}}}
 		ops := append(incOps,
 			txn.Op{
 				C:      unitsC,
 				Id:     u.doc.DocID,
 				Assert: append(notDeadDoc, differentCharm...),
-				Update: bson.D{{"$set", bson.D{{"charmurl", curl}}}},
+				Update: bson.D{{"$set", bson.D{{"charmurl", curl.String()}}}},
 			})
-		if u.doc.CharmURL != nil {
+
+		unitCURL := u.doc.CharmURL
+		if unitCURL != nil {
 			// Drop the reference to the old charm.
 			// Since we can force this now, let's.. There is no point hanging on to the old charm.
 			op := &ForcedOperation{Force: true}
-			decOps, err := appCharmDecRefOps(u.st, u.doc.Application, u.doc.CharmURL, true, op)
+			decOps, err := appCharmDecRefOps(u.st, u.doc.Application, unitCURL, true, op)
 			if err != nil {
 				// No need to stop further processing if the old key could not be removed.
-				logger.Errorf("could not remove old charm references for %v:%v", u.doc.CharmURL, err)
+				logger.Errorf("could not remove old charm references for %s: %v", unitCURL, err)
 			}
 			if len(op.Errors) != 0 {
-				logger.Errorf("could not remove old charm references for %v:%v", u.doc.CharmURL, op.Errors)
+				logger.Errorf("could not remove old charm references for %s: %v", unitCURL, op.Errors)
 			}
 			ops = append(ops, decOps...)
 		}
@@ -1539,7 +1542,8 @@ func (u *Unit) SetCharmURL(curl *charm.URL) error {
 	}
 	err := u.st.db().Run(buildTxn)
 	if err == nil {
-		u.doc.CharmURL = curl
+		curlStr := curl.String()
+		u.doc.CharmURL = &curlStr
 	}
 	return err
 }
@@ -1547,15 +1551,23 @@ func (u *Unit) SetCharmURL(curl *charm.URL) error {
 // charm returns the charm for the unit, or the application if the unit's charm
 // has not been set yet.
 func (u *Unit) charm() (*Charm, error) {
-	curl, ok := u.CharmURL()
-	if !ok {
+	cURLStr := u.CharmURL()
+	if cURLStr == nil {
 		app, err := u.Application()
 		if err != nil {
 			return nil, err
 		}
-		curl = app.doc.CharmURL
+		cURLStr, _ = app.CharmURL()
 	}
-	ch, err := u.st.Charm(curl)
+
+	if cURLStr == nil {
+		return nil, errors.Errorf("missing charm URL for %q", u.Name())
+	}
+	cURL, err := charm.ParseURL(*cURLStr)
+	if err != nil {
+		return nil, errors.NotValidf("charm url %q", *cURLStr)
+	}
+	ch, err := u.st.Charm(cURL)
 	return ch, errors.Annotatef(err, "getting charm for %s", u)
 }
 
@@ -1568,12 +1580,12 @@ func (u *Unit) assertCharmOps(ch *Charm) []txn.Op {
 		Id:     u.doc.Name,
 		Assert: bson.D{{"charmurl", u.doc.CharmURL}},
 	}}
-	if _, ok := u.CharmURL(); !ok {
+	if u.doc.CharmURL != nil {
 		appName := u.ApplicationName()
 		ops = append(ops, txn.Op{
 			C:      applicationsC,
 			Id:     appName,
-			Assert: bson.D{{"charmurl", ch.URL()}},
+			Assert: bson.D{{"charmurl", ch.String()}},
 		})
 	}
 	return ops
@@ -2939,9 +2951,9 @@ func addUnitOps(st *State, args addUnitOpsArgs) ([]txn.Op, error) {
 	// relax the restrictions on migrating apps mid-upgrade, this
 	// will need to be more sophisticated, because it might need to
 	// create the settings doc.
-	if curl := args.unitDoc.CharmURL; curl != nil {
+	if charmURL := args.unitDoc.CharmURL; charmURL != nil {
 		appName := args.unitDoc.Application
-		charmRefOps, err := appCharmIncRefOps(st, appName, curl, false)
+		charmRefOps, err := appCharmIncRefOps(st, appName, charmURL, false)
 		if err != nil {
 			return nil, errors.Trace(err)
 		}

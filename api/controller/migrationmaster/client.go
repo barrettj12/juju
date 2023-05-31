@@ -21,8 +21,8 @@ import (
 	"github.com/juju/juju/api/base"
 	"github.com/juju/juju/api/common"
 	"github.com/juju/juju/core/migration"
+	"github.com/juju/juju/core/resources"
 	"github.com/juju/juju/core/watcher"
-	"github.com/juju/juju/resource"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -151,10 +151,33 @@ func (c *Client) ModelInfo() (migration.ModelInfo, error) {
 	}, nil
 }
 
+// SourceControllerInfo returns connection information about the source controller
+// and uuids of any other hosted models involved in cross model relations.
+func (c *Client) SourceControllerInfo() (migration.SourceControllerInfo, []string, error) {
+	var info params.MigrationSourceInfo
+	err := c.caller.FacadeCall("SourceControllerInfo", nil, &info)
+	if err != nil {
+		return migration.SourceControllerInfo{}, nil, errors.Trace(err)
+	}
+	sourceTag, err := names.ParseControllerTag(info.ControllerTag)
+	if err != nil {
+		return migration.SourceControllerInfo{}, nil, errors.Trace(err)
+	}
+	return migration.SourceControllerInfo{
+		ControllerTag:   sourceTag,
+		ControllerAlias: info.ControllerAlias,
+		Addrs:           info.Addrs,
+		CACert:          info.CACert,
+	}, info.LocalRelatedModels, nil
+}
+
 // Prechecks verifies that the source controller and model are healthy
 // and able to participate in a migration.
-func (c *Client) Prechecks() error {
-	return c.caller.FacadeCall("Prechecks", nil, nil)
+func (c *Client) Prechecks(targetControllerVersion version.Number) error {
+	args := params.PrechecksArgs{
+		TargetControllerVersion: targetControllerVersion,
+	}
+	return c.caller.FacadeCall("Prechecks", args, nil)
 }
 
 // Export returns a serialized representation of the model associated
@@ -360,7 +383,7 @@ func convertAppResource(in params.SerializedModelResource) (migration.Serialized
 	if err != nil {
 		return empty, errors.Annotate(err, "charmstore revision")
 	}
-	unitRevs := make(map[string]resource.Resource)
+	unitRevs := make(map[string]resources.Resource)
 	for unitName, inUnitRev := range in.UnitRevisions {
 		unitRev, err := convertResourceRevision(in.Application, in.Name, inUnitRev)
 		if err != nil {
@@ -375,8 +398,8 @@ func convertAppResource(in params.SerializedModelResource) (migration.Serialized
 	}, nil
 }
 
-func convertResourceRevision(app, name string, rev params.SerializedModelResourceRevision) (resource.Resource, error) {
-	var empty resource.Resource
+func convertResourceRevision(app, name string, rev params.SerializedModelResourceRevision) (resources.Resource, error) {
+	var empty resources.Resource
 	type_, err := charmresource.ParseType(rev.Type)
 	if err != nil {
 		return empty, errors.Trace(err)
@@ -391,7 +414,7 @@ func convertResourceRevision(app, name string, rev params.SerializedModelResourc
 			return empty, errors.Annotate(err, "invalid fingerprint")
 		}
 	}
-	return resource.Resource{
+	return resources.Resource{
 		Resource: charmresource.Resource{
 			Meta: charmresource.Meta{
 				Name:        name,

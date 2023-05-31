@@ -27,7 +27,6 @@ import (
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/juju/testing"
 	"github.com/juju/juju/state"
-	"github.com/juju/juju/storage"
 	"github.com/juju/juju/testcharms"
 	"github.com/juju/juju/worker/uniter/runner"
 	"github.com/juju/juju/worker/uniter/runner/context"
@@ -49,7 +48,7 @@ type ContextSuite struct {
 	unit        *state.Unit
 	uniter      *uniter.State
 	apiUnit     *uniter.Unit
-	storage     *runnertesting.StorageContextAccessor
+	payloads    *uniter.PayloadFacadeClient
 
 	apiRelunits map[int]*uniter.RelationUnit
 	relch       *state.Charm
@@ -65,17 +64,6 @@ func (s *ContextSuite) SetUpTest(c *gc.C) {
 	s.application = s.AddTestingApplication(c, "u", ch)
 	s.unit = s.AddUnit(c, s.application)
 
-	storageData0 := names.NewStorageTag("data/0")
-	s.storage = &runnertesting.StorageContextAccessor{
-		map[names.StorageTag]*runnertesting.ContextStorage{
-			storageData0: {
-				storageData0,
-				storage.StorageKindBlock,
-				"/dev/sdb",
-			},
-		},
-	}
-
 	password, err := utils.RandomPassword()
 	c.Assert(err, jc.ErrorIsNil)
 	err = s.unit.SetPassword(password)
@@ -88,6 +76,7 @@ func (s *ContextSuite) SetUpTest(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 	s.model, err = s.State.Model()
 	c.Assert(err, jc.ErrorIsNil)
+	s.payloads = uniter.NewPayloadFacadeClient(s.st)
 
 	s.paths = runnertesting.NewRealPaths(c)
 	s.membership = map[int][]string{}
@@ -106,9 +95,9 @@ func (s *ContextSuite) SetUpTest(c *gc.C) {
 	s.contextFactory, err = context.NewContextFactory(context.FactoryConfig{
 		State:            s.uniter,
 		Unit:             s.apiUnit,
+		Payloads:         s.payloads,
 		Tracker:          &runnertesting.FakeTracker{},
 		GetRelationInfos: s.getRelationInfos,
-		Storage:          s.storage,
 		Paths:            s.paths,
 		Clock:            testclock.NewClock(time.Time{}),
 		Logger:           loggo.GetLogger("test"),

@@ -44,44 +44,6 @@ var (
 	_ config.ConfigSchemaSource = (*environProvider)(nil)
 )
 
-// These values are stub LXD client credentials for use in tests.
-const (
-	PublicKey = `-----BEGIN CERTIFICATE-----
-...
-...
-...
-...
-...
-...
-...
-...
-...
-...
-...
-...
-...
-...
------END CERTIFICATE-----
-`
-	PrivateKey = `-----BEGIN PRIVATE KEY-----
-...
-...
-...
-...
-...
-...
-...
-...
-...
-...
-...
-...
-...
-...
------END PRIVATE KEY-----
-`
-)
-
 // These are stub config values for use in tests.
 var (
 	ConfigAttrs = testing.FakeConfig().Merge(testing.Attrs{
@@ -189,7 +151,8 @@ func (s *BaseSuiteUnpatched) initInst(c *gc.C) {
 
 	cons := constraints.Value{}
 
-	instanceConfig, err := instancecfg.NewBootstrapInstanceConfig(testing.FakeControllerConfig(), cons, cons, "trusty", "", nil)
+	instanceConfig, err := instancecfg.NewBootstrapInstanceConfig(testing.FakeControllerConfig(), cons, cons,
+		coreseries.MakeDefaultBase("ubuntu", "14.04"), "", nil)
 	c.Assert(err, jc.ErrorIsNil)
 
 	err = instanceConfig.SetTools(coretools.List{
@@ -231,7 +194,7 @@ func (s *BaseSuiteUnpatched) initInst(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 
 	s.StartInstArgs = environs.StartInstanceParams{
-		ControllerUUID: instanceConfig.Controller.Config.ControllerUUID(),
+		ControllerUUID: instanceConfig.ControllerConfig.ControllerUUID(),
 		InstanceConfig: instanceConfig,
 		Tools:          tools,
 		Constraints:    cons,
@@ -283,13 +246,14 @@ func (s *BaseSuiteUnpatched) NewContainer(c *gc.C, name string) *containerlxd.Co
 	}
 
 	return &containerlxd.Container{
-		Container: api.Container{
+		Instance: api.Instance{
 			Name:       name,
 			StatusCode: api.Running,
 			Status:     api.Running.String(),
-			ContainerPut: api.ContainerPut{
+			InstancePut: api.InstancePut{
 				Config: metadata,
 			},
+			Type: "container",
 		},
 	}
 }
@@ -732,11 +696,11 @@ func (*StubClient) GetNetworkState(string) (*api.NetworkState, error) {
 	panic("this stub is deprecated; use mocks instead")
 }
 
-func (*StubClient) GetContainer(string) (*api.Container, string, error) {
+func (*StubClient) GetInstance(string) (*api.Instance, string, error) {
 	panic("this stub is deprecated; use mocks instead")
 }
 
-func (*StubClient) GetContainerState(string) (*api.ContainerState, string, error) {
+func (*StubClient) GetInstanceState(string) (*api.InstanceState, string, error) {
 	panic("this stub is deprecated; use mocks instead")
 }
 
@@ -838,11 +802,13 @@ func (s *EnvironSuite) GetStartInstanceArgs(c *gc.C, series string) environs.Sta
 	}
 
 	cons := constraints.Value{}
-	iConfig, err := instancecfg.NewBootstrapInstanceConfig(testing.FakeControllerConfig(), cons, cons, series, "", nil)
+	base, err := coreseries.GetBaseFromSeries(series)
+	c.Assert(err, jc.ErrorIsNil)
+	iConfig, err := instancecfg.NewBootstrapInstanceConfig(testing.FakeControllerConfig(), cons, cons, base, "", nil)
 	c.Assert(err, jc.ErrorIsNil)
 
 	return environs.StartInstanceParams{
-		ControllerUUID: iConfig.Controller.Config.ControllerUUID(),
+		ControllerUUID: iConfig.ControllerConfig.ControllerUUID(),
 		InstanceConfig: iConfig,
 		Tools:          tools,
 		Constraints:    cons,

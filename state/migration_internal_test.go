@@ -220,11 +220,6 @@ func (s *MigrationSuite) TestKnownCollections(c *gc.C) {
 		// sure the leader units' leases are claimed in the target
 		// controller when leases are managed in raft.
 		leaseHoldersC,
-
-		// secrets
-		secretMetadataC,
-		secretValuesC,
-		secretRotateC,
 	)
 
 	modelCollections := set.NewStrings()
@@ -423,6 +418,7 @@ func (s *MigrationSuite) TestApplicationDocFields(c *gc.C) {
 		"DesiredScale",
 		"Placement",
 		"HasResources",
+		"ProvisioningState",
 	)
 	s.AssertExportedFields(c, applicationDoc{}, migrated.Union(ignored))
 }

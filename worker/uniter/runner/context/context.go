@@ -1,8 +1,6 @@
 // Copyright 2012-2014 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
-// Package context contains the ContextFactory and Context definitions. Context implements
-// runner.Context and is used together with uniter.Runner to run hooks, commands and actions.
 package context
 
 import (
@@ -19,21 +17,21 @@ import (
 	"github.com/juju/names/v4"
 	"github.com/juju/proxy"
 
-	"github.com/juju/juju/api/agent/secretsmanager"
 	"github.com/juju/juju/api/agent/uniter"
-	"github.com/juju/juju/api/base"
 	"github.com/juju/juju/caas"
 	k8sspecs "github.com/juju/juju/caas/kubernetes/provider/specs"
 	"github.com/juju/juju/core/application"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/quota"
-	coresecrets "github.com/juju/juju/core/secrets"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/juju/sockets"
 	"github.com/juju/juju/rpc/params"
+	"github.com/juju/juju/storage"
 	"github.com/juju/juju/version"
 	"github.com/juju/juju/worker/common/charmrunner"
+	"github.com/juju/juju/worker/uniter/runner/context/payloads"
+	"github.com/juju/juju/worker/uniter/runner/context/resources"
 	"github.com/juju/juju/worker/uniter/runner/jujuc"
 )
 
@@ -91,9 +89,9 @@ type Paths interface {
 	// to store metrics recorded during a single hook run.
 	GetMetricsSpoolDir() string
 
-	// ComponentDir returns the filesystem path to the directory
-	// containing all data files for a component.
-	ComponentDir(name string) string
+	// GetResourcesDir returns the filesystem path to the directory
+	// containing resource data files.
+	GetResourcesDir() string
 }
 
 // Clock defines the methods of the full clock.Clock that are needed here.
@@ -104,31 +102,6 @@ type Clock interface {
 }
 
 var ErrIsNotLeader = errors.Errorf("this unit is not the leader")
-
-// ComponentConfig holds all the information related to a hook context
-// needed by components.
-type ComponentConfig struct {
-	// UnitName is the name of the unit.
-	UnitName string
-	// DataDir is the component's data directory.
-	DataDir string
-	// APICaller is the API caller the component may use.
-	APICaller base.APICaller
-}
-
-// ComponentFunc is a factory function for Context components.
-type ComponentFunc func(ComponentConfig) (jujuc.ContextComponent, error)
-
-var registeredComponentFuncs = map[string]ComponentFunc{}
-
-// Add the named component factory func to the registry.
-func RegisterComponentFunc(name string, f ComponentFunc) error {
-	if _, ok := registeredComponentFuncs[name]; ok {
-		return errors.AlreadyExistsf("%s", name)
-	}
-	registeredComponentFuncs[name] = f
-	return nil
-}
 
 // meterStatus describes the unit's meter status.
 type meterStatus struct {
@@ -143,6 +116,7 @@ type HookProcess interface {
 }
 
 //go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/hookunit_mock.go github.com/juju/juju/worker/uniter/runner/context HookUnit
+//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/state_mock.go github.com/juju/juju/worker/uniter/runner/context State
 
 // HookUnit represents the functions needed by a unit in a hook context to
 // call into state.
@@ -163,8 +137,25 @@ type HookUnit interface {
 	PublicAddress() (string, error)
 }
 
+// State exposes required state functions needed by the HookContext.
+type State interface {
+	UnitStorageAttachments(unitTag names.UnitTag) ([]params.StorageAttachmentId, error)
+	StorageAttachment(storageTag names.StorageTag, unitTag names.UnitTag) (params.StorageAttachment, error)
+	GoalState() (application.GoalState, error)
+	GetPodSpec(appName string) (string, error)
+	GetRawK8sSpec(appName string) (string, error)
+	CloudSpec() (*params.CloudSpec, error)
+	ActionBegin(tag names.ActionTag) error
+	ActionFinish(tag names.ActionTag, status string, results map[string]interface{}, message string) error
+	UnitWorkloadVersion(tag names.UnitTag) (string, error)
+	SetUnitWorkloadVersion(tag names.UnitTag, version string) error
+	OpenedMachinePortRangesByEndpoint(machineTag names.MachineTag) (map[names.UnitTag]network.GroupedPortRanges, error)
+}
+
 // HookContext is the implementation of runner.Context.
 type HookContext struct {
+	*resources.ResourcesHookContext
+	*payloads.PayloadsHookContext
 	unit HookUnit
 
 	// state is the handle to the uniter State so that HookContext can make
@@ -172,10 +163,7 @@ type HookContext struct {
 	// NOTE: We would like to be rid of the fake-remote-Unit and switch
 	// over fully to API calls on State.  This adds that ability, but we're
 	// not fully there yet.
-	state *uniter.State
-
-	// secretFacade allows the context to access the secrets backend.
-	secretFacade *secretsmanager.Client
+	state State
 
 	// LeadershipContext supplies several hooks.Context methods.
 	LeadershipContext
@@ -278,13 +266,16 @@ type HookContext struct {
 	// is hooks.RebootNow the hook will be killed and requeued.
 	rebootPriority jujuc.RebootPriority
 
-	// storage provides access to the information about storage
-	// attached to the unit.
-	storage StorageContextAccessor
-
 	// storageId is the tag of the storage instance associated
 	// with the running hook.
 	storageTag names.StorageTag
+
+	// storageTags returns the tags of storage instances attached to the unit
+	storageTags []names.StorageTag
+
+	// storageAttachmentCache holds cached storage attachments so that hook
+	// calls are consistent.
+	storageAttachmentCache map[names.StorageTag]jujuc.ContextStorageAttachment
 
 	// hasRunSetStatus is true if a call to the status-set was made during the
 	// invocation of a hook.
@@ -303,9 +294,6 @@ type HookContext struct {
 	clock Clock
 
 	logger loggo.Logger
-
-	componentDir   func(string) string
-	componentFuncs map[string]ComponentFunc
 
 	// slaLevel contains the current SLA level.
 	slaLevel string
@@ -335,9 +323,6 @@ type HookContext struct {
 	// seriesUpgradeTarget is the series that the unit's machine is to be
 	// updated to when Juju is issued the `upgrade-series` command.
 	seriesUpgradeTarget string
-
-	// secretURL is the reference to the secret relevant to the hook.
-	secretURL string
 
 	mu sync.Mutex
 }
@@ -451,28 +436,6 @@ func (ctx *HookContext) ensureCharmStateLoaded() error {
 	ctx.cachedCharmState = charmState
 	ctx.charmStateCacheDirty = false
 	return nil
-}
-
-// Component returns the ContextComponent with the supplied name if
-// it was found.
-// Implements jujuc.HookContext.ContextComponents, part of runner.Context.
-func (ctx *HookContext) Component(name string) (jujuc.ContextComponent, error) {
-	compCtxFunc, ok := ctx.componentFuncs[name]
-	if !ok {
-		return nil, errors.NotFoundf("context component %q", name)
-	}
-
-	facade := ctx.state.Facade()
-	config := ComponentConfig{
-		UnitName:  ctx.unit.Name(),
-		DataDir:   ctx.componentDir(name),
-		APICaller: facade.RawAPICaller(),
-	}
-	compCtx, err := compCtxFunc(config)
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	return compCtx, nil
 }
 
 // RequestReboot will set the reboot flag to true on the machine agent
@@ -701,7 +664,24 @@ func (ctx *HookContext) AvailabilityZone() (string, error) {
 // attached to the unit or an error if they are not available.
 // Implements jujuc.HookContext.ContextStorage, part of runner.Context.
 func (ctx *HookContext) StorageTags() ([]names.StorageTag, error) {
-	return ctx.storage.StorageTags()
+	// Comparing to nil on purpose here to cache an empty slice.
+	if ctx.storageTags != nil {
+		return ctx.storageTags, nil
+	}
+	attachmentIds, err := ctx.state.UnitStorageAttachments(ctx.unit.Tag())
+	if err != nil {
+		return nil, err
+	}
+	// N.B. zero-length non-nil slice on purpose.
+	ctx.storageTags = make([]names.StorageTag, 0)
+	for _, attachmentId := range attachmentIds {
+		storageTag, err := names.ParseStorageTag(attachmentId.StorageTag)
+		if err != nil {
+			return nil, err
+		}
+		ctx.storageTags = append(ctx.storageTags, storageTag)
+	}
+	return ctx.storageTags, nil
 }
 
 // HookStorage returns the storage attachment associated
@@ -709,6 +689,10 @@ func (ctx *HookContext) StorageTags() ([]names.StorageTag, error) {
 // was not found or is not available.
 // Implements jujuc.HookContext.ContextStorage, part of runner.Context.
 func (ctx *HookContext) HookStorage() (jujuc.ContextStorageAttachment, error) {
+	emptyTag := names.StorageTag{}
+	if ctx.storageTag == emptyTag {
+		return nil, errors.NotFound
+	}
 	return ctx.Storage(ctx.storageTag)
 }
 
@@ -717,10 +701,20 @@ func (ctx *HookContext) HookStorage() (jujuc.ContextStorageAttachment, error) {
 // available to the context.
 // Implements jujuc.HookContext.ContextStorage, part of runner.Context.
 func (ctx *HookContext) Storage(tag names.StorageTag) (jujuc.ContextStorageAttachment, error) {
-	if ctx.storage == nil {
-		return nil, errors.NotFoundf("storage %s", tag)
+	if ctxStorageAttachment, ok := ctx.storageAttachmentCache[tag]; ok {
+		return ctxStorageAttachment, nil
 	}
-	return ctx.storage.Storage(tag)
+	attachment, err := ctx.state.StorageAttachment(tag, ctx.unit.Tag())
+	if err != nil {
+		return nil, err
+	}
+	ctxStorageAttachment := &contextStorage{
+		tag:      tag,
+		kind:     storage.StorageKind(attachment.Kind),
+		location: attachment.Location,
+	}
+	ctx.storageAttachmentCache[tag] = ctxStorageAttachment
+	return ctxStorageAttachment, nil
 }
 
 // AddUnitStorage saves storage constraints in the context.
@@ -777,62 +771,6 @@ func (ctx *HookContext) ConfigSettings() (charm.Settings, error) {
 		result[name] = value
 	}
 	return result, nil
-}
-
-// GetSecret returns the value of the specified secret.
-func (ctx *HookContext) GetSecret(name string) (coresecrets.SecretValue, error) {
-	v, err := ctx.secretFacade.GetValue(name)
-	if err != nil {
-		return nil, err
-	}
-	return v, nil
-}
-
-// CreateSecret creates a secret with the specified data.
-func (ctx *HookContext) CreateSecret(name string, args *jujuc.SecretUpsertArgs) (string, error) {
-	app, _ := names.UnitApplication(ctx.UnitName())
-	cfg := coresecrets.NewSecretConfig(coresecrets.AppSnippet, app, name)
-	cfg.RotateInterval = args.RotateInterval
-	cfg.Status = args.Status
-	cfg.Description = args.Description
-	cfg.Tags = args.Tags
-	return ctx.secretFacade.Create(cfg, args.Type, args.Value)
-}
-
-// UpdateSecret creates a secret with the specified data.
-func (ctx *HookContext) UpdateSecret(name string, args *jujuc.SecretUpsertArgs) (string, error) {
-	app, _ := names.UnitApplication(ctx.UnitName())
-	cfg := coresecrets.NewSecretConfig(coresecrets.AppSnippet, app, name)
-	cfg.RotateInterval = args.RotateInterval
-	cfg.Status = args.Status
-	cfg.Description = args.Description
-	cfg.Tags = args.Tags
-	URL := coresecrets.NewSimpleURL(cfg.Path)
-	return ctx.secretFacade.Update(URL.ID(), cfg, args.Value)
-}
-
-// GrantSecret grants access to a specified secret.
-func (ctx *HookContext) GrantSecret(name string, args *jujuc.SecretGrantRevokeArgs) error {
-	app, _ := names.UnitApplication(ctx.UnitName())
-	cfg := coresecrets.NewSecretConfig(coresecrets.AppSnippet, app, name)
-	URL := coresecrets.NewSimpleURL(cfg.Path)
-	return ctx.secretFacade.Grant(URL.ID(), &secretsmanager.SecretRevokeGrantArgs{
-		ApplicationName: args.ApplicationName,
-		UnitName:        args.UnitName,
-		RelationId:      args.RelationId,
-		Role:            coresecrets.RoleView,
-	})
-}
-
-// RevokeSecret revokes access to a specified secret.
-func (ctx *HookContext) RevokeSecret(name string, args *jujuc.SecretGrantRevokeArgs) error {
-	app, _ := names.UnitApplication(ctx.UnitName())
-	cfg := coresecrets.NewSecretConfig(coresecrets.AppSnippet, app, name)
-	URL := coresecrets.NewSimpleURL(cfg.Path)
-	return ctx.secretFacade.Revoke(URL.ID(), &secretsmanager.SecretRevokeGrantArgs{
-		ApplicationName: args.ApplicationName,
-		UnitName:        args.UnitName,
-	})
 }
 
 // GoalState returns the goal state for the current unit.
@@ -1133,19 +1071,13 @@ func (ctx *HookContext) HookVars(
 		)
 	}
 
-	if ctx.secretURL != "" {
-		vars = append(vars,
-			"JUJU_SECRET_URL="+ctx.secretURL,
-		)
-	}
-
 	if storage, err := ctx.HookStorage(); err == nil {
 		vars = append(vars,
 			"JUJU_STORAGE_ID="+storage.Tag().Id(),
 			"JUJU_STORAGE_LOCATION="+storage.Location(),
 			"JUJU_STORAGE_KIND="+storage.Kind().String(),
 		)
-	} else if !errors.IsNotFound(err) {
+	} else if !errors.Is(err, errors.NotFound) && !errors.Is(err, errors.NotProvisioned) {
 		return nil, errors.Trace(err)
 	}
 
@@ -1313,7 +1245,7 @@ func (ctx *HookContext) addCommitHookChangesForCAAS(builder *uniter.CommitHookPa
 // finalizeAction passes back the final status of an Action hook to state.
 // It wraps any errors which occurred in normal behavior of the Action run;
 // only errors passed in unhandledErr will be returned.
-func (ctx *HookContext) finalizeAction(err, unhandledErr error) error {
+func (ctx *HookContext) finalizeAction(err, flushErr error) error {
 	// TODO (binary132): synchronize with gsamfira's reboot logic
 	ctx.actionDataMu.Lock()
 	defer ctx.actionDataMu.Unlock()
@@ -1330,14 +1262,6 @@ func (ctx *HookContext) finalizeAction(err, unhandledErr error) error {
 		}
 	}
 
-	// If the action completed without an error but we failed to flush the
-	// charm state changes due to a quota limit, we should attach the error
-	// to the action.
-	if err == nil && errors.IsQuotaLimitExceeded(unhandledErr) {
-		err = unhandledErr
-		unhandledErr = nil
-	}
-
 	// If we had an action error, we'll simply encapsulate it in the response
 	// and discard the error state.  Actions should not error the uniter.
 	if err != nil {
@@ -1352,6 +1276,23 @@ func (ctx *HookContext) finalizeAction(err, unhandledErr error) error {
 			actionStatus = params.ActionFailed
 		}
 	}
+	if flushErr != nil {
+		if results == nil {
+			results = map[string]interface{}{}
+		}
+		if stderr, ok := results["Stderr"].(string); ok {
+			results["Stderr"] = stderr + "\n" + flushErr.Error()
+		} else {
+			results["Stderr"] = flushErr.Error()
+		}
+		if code, ok := results["Code"]; !ok || code == "0" {
+			results["Code"] = "1"
+		}
+		actionStatus = params.ActionFailed
+		if message == "" {
+			message = "committing requested changes failed"
+		}
+	}
 
 	callErr := ctx.state.ActionFinish(tag, actionStatus, results, message)
 	// Prevent the unit agent from looping if it's impossible to finalise the action.
@@ -1359,10 +1300,7 @@ func (ctx *HookContext) finalizeAction(err, unhandledErr error) error {
 		ctx.logger.Warningf("error finalising action %v: %v", tag.Id(), callErr)
 		callErr = nil
 	}
-	if callErr != nil {
-		unhandledErr = errors.Wrap(unhandledErr, callErr)
-	}
-	return unhandledErr
+	return errors.Trace(callErr)
 }
 
 // killCharmHook tries to kill the current running charm hook.
@@ -1402,39 +1340,14 @@ func (ctx *HookContext) killCharmHook() error {
 // the current unit.
 // Implements jujuc.HookContext.ContextVersion, part of runner.Context.
 func (ctx *HookContext) UnitWorkloadVersion() (string, error) {
-	var results params.StringResults
-	args := params.Entities{
-		Entities: []params.Entity{{Tag: ctx.unit.Tag().String()}},
-	}
-	err := ctx.state.Facade().FacadeCall("WorkloadVersion", args, &results)
-	if err != nil {
-		return "", err
-	}
-	if len(results.Results) != 1 {
-		return "", fmt.Errorf("expected 1 result, got %d", len(results.Results))
-	}
-	result := results.Results[0]
-	if result.Error != nil {
-		return "", result.Error
-	}
-	return result.Result, nil
+	return ctx.state.UnitWorkloadVersion(ctx.unit.Tag())
 }
 
 // SetUnitWorkloadVersion sets the current unit's workload version to
 // the specified value.
 // Implements jujuc.HookContext.ContextVersion, part of runner.Context.
 func (ctx *HookContext) SetUnitWorkloadVersion(version string) error {
-	var result params.ErrorResults
-	args := params.EntityWorkloadVersions{
-		Entities: []params.EntityWorkloadVersion{
-			{Tag: ctx.unit.Tag().String(), WorkloadVersion: version},
-		},
-	}
-	err := ctx.state.Facade().FacadeCall("SetWorkloadVersion", args, &result)
-	if err != nil {
-		return err
-	}
-	return result.OneError()
+	return ctx.state.SetUnitWorkloadVersion(ctx.unit.Tag(), version)
 }
 
 // NetworkInfo returns the network info for the given bindings on the given relation.
@@ -1453,14 +1366,4 @@ func (ctx *HookContext) WorkloadName() (string, error) {
 		return "", errors.NotFoundf("workload name")
 	}
 	return ctx.workloadName, nil
-}
-
-// SecretURL returns the secret URL for secret hooks.
-// This is not yet used by any hook commands - it is exported
-// for tests to use.
-func (ctx *HookContext) SecretURL() (string, error) {
-	if ctx.secretURL == "" {
-		return "", errors.NotFoundf("secret URL")
-	}
-	return ctx.secretURL, nil
 }

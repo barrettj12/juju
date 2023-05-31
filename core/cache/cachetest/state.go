@@ -16,6 +16,7 @@ import (
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/permission"
+	"github.com/juju/juju/core/series"
 	"github.com/juju/juju/state"
 )
 
@@ -94,7 +95,7 @@ func ApplicationChange(c *gc.C, modelUUID string, app *state.Application) cache.
 		ModelUUID:   modelUUID,
 		Name:        app.Name(),
 		Exposed:     app.IsExposed(),
-		CharmURL:    cURL.Path(),
+		CharmURL:    *cURL,
 		Life:        life.Value(app.Life().String()),
 		MinUnits:    app.MinUnits(),
 		Constraints: cons,
@@ -125,6 +126,7 @@ func MachineChange(c *gc.C, modelUUID string, machine *state.Machine) cache.Mach
 
 	sc, scKnown := machine.SupportedContainers()
 
+	base, _ := series.GetBaseFromSeries(machine.Series())
 	return cache.MachineChange{
 		ModelUUID:                modelUUID,
 		Id:                       machine.Id(),
@@ -133,6 +135,7 @@ func MachineChange(c *gc.C, modelUUID string, machine *state.Machine) cache.Mach
 		InstanceStatus:           iSts,
 		Life:                     life.Value(machine.Life().String()),
 		Series:                   machine.Series(),
+		Base:                     base.String(),
 		ContainerType:            string(machine.ContainerType()),
 		IsManual:                 isManual,
 		SupportedContainers:      sc,
@@ -165,8 +168,8 @@ func UnitChange(c *gc.C, modelUUID string, unit *state.Unit) cache.UnitChange {
 	}
 
 	var charmURL string
-	if cURL, ok := unit.CharmURL(); ok {
-		charmURL = cURL.String()
+	if cURL := unit.CharmURL(); cURL != nil {
+		charmURL = *cURL
 	}
 
 	pr, err := unit.OpenedPortRanges()
@@ -182,11 +185,13 @@ func UnitChange(c *gc.C, modelUUID string, unit *state.Unit) cache.UnitChange {
 
 	principal, _ := unit.PrincipalName()
 
+	base, _ := series.GetBaseFromSeries(unit.Series())
 	return cache.UnitChange{
 		ModelUUID:                modelUUID,
 		Name:                     unit.Name(),
 		Application:              unit.ApplicationName(),
 		Series:                   unit.Series(),
+		Base:                     base.String(),
 		CharmURL:                 charmURL,
 		Life:                     life.Value(unit.Life().String()),
 		PublicAddress:            publicAddr.String(),

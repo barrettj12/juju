@@ -1,5 +1,4 @@
 // Copyright 2012-2014 Canonical Ltd.
-
 // Licensed under the AGPLv3, see LICENCE file for details.
 
 package uniter
@@ -52,6 +51,11 @@ func (paths Paths) GetCharmDir() string {
 	return paths.State.CharmDir
 }
 
+// GetResourcesDir exists to satisfy the context.Paths interface.
+func (paths Paths) GetResourcesDir() string {
+	return paths.State.ResourcesDir
+}
+
 // GetJujucClientSocket exists to satisfy the context.Paths interface.
 func (paths Paths) GetJujucClientSocket(remote bool) sockets.Socket {
 	if remote {
@@ -71,12 +75,6 @@ func (paths Paths) GetJujucServerSocket(remote bool) sockets.Socket {
 // GetMetricsSpoolDir exists to satisfy the runner.Paths interface.
 func (paths Paths) GetMetricsSpoolDir() string {
 	return paths.State.MetricsSpoolDir
-}
-
-// ComponentDir returns the filesystem path to the directory
-// containing all data files for a component.
-func (paths Paths) ComponentDir(name string) string {
-	return filepath.Join(paths.State.BaseDir, name)
 }
 
 const jujucServerSocketPort = 30000
@@ -113,6 +111,9 @@ type StatePaths struct {
 
 	// CharmDir is the directory to which the charm the uniter runs is deployed.
 	CharmDir string
+
+	// ResourcesDir is the directory to which the charm the uniter runs is deployed.
+	ResourcesDir string
 
 	// BundlesDir holds downloaded charms.
 	BundlesDir string
@@ -195,6 +196,7 @@ func NewWorkerPaths(dataDir string, unitTag names.UnitTag, worker string, socket
 		State: StatePaths{
 			BaseDir:         baseDir,
 			CharmDir:        join(baseDir, "charm"),
+			ResourcesDir:    join(baseDir, "resources"),
 			BundlesDir:      join(stateDir, "bundles"),
 			DeployerDir:     join(stateDir, "deployer"),
 			MetricsSpoolDir: join(stateDir, "spool", "metrics"),

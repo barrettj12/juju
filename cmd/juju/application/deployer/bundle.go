@@ -19,7 +19,6 @@ import (
 	"github.com/juju/juju/cmd/juju/application/utils"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/devices"
-	"github.com/juju/juju/resource/resourceadapters"
 	"github.com/juju/juju/storage"
 )
 
@@ -46,7 +45,7 @@ type deployBundle struct {
 	resolver             Resolver
 	authorizer           store.MacaroonGetter
 	newConsumeDetailsAPI func(url *charm.OfferURL) (ConsumeDetails, error)
-	deployResources      resourceadapters.DeployResourcesFunc
+	deployResources      DeployResourcesFunc
 	charmReader          CharmReader
 
 	useExistingMachines bool
@@ -97,10 +96,12 @@ func (d *deployBundle) deploy(
 
 	// Compose bundle to be deployed and check its validity before running
 	// any pre/post checks.
-	var bundleData *charm.BundleData
-	if bundleData, err = bundle.ComposeAndVerifyBundle(d.bundleDataSource, d.bundleOverlayFile); err != nil {
+	bundleData, unmarshalErrors, err := bundle.ComposeAndVerifyBundle(d.bundleDataSource, d.bundleOverlayFile)
+	if err != nil {
 		return errors.Annotatef(err, "cannot deploy bundle")
 	}
+	d.printDryRunUnmarshalErrors(ctx, unmarshalErrors)
+
 	d.bundleDir = d.bundleDataSource.BasePath()
 	if bundleData.UnmarshaledWithServices() {
 		logger.Warningf(`"services" key found in bundle file is deprecated, superseded by "applications" key.`)
@@ -176,6 +177,25 @@ Please repeat the deploy command with the --trust argument if you consent to tru
 		return errors.Annotate(err, "cannot deploy bundle")
 	}
 	return nil
+}
+
+func (d *deployBundle) printDryRunUnmarshalErrors(ctx *cmd.Context, unmarshalErrors []error) {
+	if !d.dryRun {
+		return
+	}
+	// During a dry run, print any unmarshalling errors from the
+	// bundles and overlays
+	var msg string
+	for _, err := range unmarshalErrors {
+		if err == nil {
+			continue
+		}
+		msg = fmt.Sprintf("%s\n %s\n", msg, err)
+	}
+	if msg == "" {
+		return
+	}
+	ctx.Warningf("These fields%swill be ignored during deployment\n", msg)
 }
 
 func (d *deployBundle) makeBundleDeploySpec(ctx *cmd.Context, apiRoot DeployerAPI) (bundleDeploySpec, error) {

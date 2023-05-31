@@ -105,6 +105,10 @@ Examples:
     # (-- -3):
     juju scp -- -3 0:file.dat foo/0:
 
+    # Copy a file ('chunks-inspect') from localhost to /loki directory
+    # in a specific container in a juju unit running in Kubernetes:
+    juju scp --container loki chunks-inspect loki-k8s/0:/loki
+
 See also: 
 	ssh
 `
@@ -158,7 +162,7 @@ func (c *scpCommand) Init(args []string) (err error) {
 	} else {
 		c.provider = &c.sshMachine
 	}
-
+	c.provider.setModelType(c.modelType)
 	c.provider.setArgs(args)
 	c.provider.setHostChecker(c.hostChecker)
 	c.provider.setRetryStrategy(c.retryStrategy)

@@ -186,7 +186,8 @@ func (api *CrossModelRelationsAPI) registerRemoteRelation(relation params.Regist
 
 	// Does the requested local endpoint exist?
 	var localEndpoint *state.Endpoint
-	for _, ep := range eps {
+	for _, v := range eps {
+		ep := v
 		if ep.Name == relation.LocalEndpointName {
 			localEndpoint = &ep
 			break
@@ -233,7 +234,6 @@ func (api *CrossModelRelationsAPI) registerRemoteRelation(relation params.Regist
 
 	_, err = api.st.AddRemoteApplication(state.AddRemoteApplicationParams{
 		Name:            uniqueRemoteApplicationName,
-		OfferUUID:       relation.OfferUUID,
 		SourceModel:     sourceModelTag,
 		Token:           relation.ApplicationToken,
 		Endpoints:       []charm.Relation{remoteEndpoint.Relation},
@@ -550,7 +550,7 @@ func (api *CrossModelRelationsAPI) WatchOfferStatus(
 			results.Results[i].Error = apiservererrors.ServerError(err)
 			continue
 		}
-		// TODO: move full watcher to the model cache.
+
 		w, err := api.offerStatusWatcher(api.st, arg.OfferUUID)
 		if err != nil {
 			results.Results[i].Error = apiservererrors.ServerError(err)

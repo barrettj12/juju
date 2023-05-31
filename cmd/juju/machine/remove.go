@@ -12,7 +12,6 @@ import (
 	"github.com/juju/names/v4"
 
 	"github.com/juju/juju/api"
-	apiclient "github.com/juju/juju/api/client/client"
 	"github.com/juju/juju/api/client/machinemanager"
 	jujucmd "github.com/juju/juju/cmd"
 	"github.com/juju/juju/cmd/juju/block"
@@ -79,6 +78,9 @@ func (c *removeCommand) Info() *cmd.Info {
 // SetFlags implements Command.SetFlags.
 func (c *removeCommand) SetFlags(f *gnuflag.FlagSet) {
 	c.ModelCommandBase.SetFlags(f)
+	// This unused var is declared so we can pass a valid ptr into BoolVar
+	var noPromptHolder bool
+	f.BoolVar(&noPromptHolder, "no-prompt", false, "Does nothing. Option present for forward compatibility with Juju 3")
 	f.BoolVar(&c.Force, "force", false, "Completely remove a machine and all its dependencies")
 	f.BoolVar(&c.KeepInstance, "keep-instance", false, "Do not stop the running cloud instance")
 	f.BoolVar(&c.NoWait, "no-wait", false, "Rush through machine removal without waiting for each individual step to complete")
@@ -99,35 +101,8 @@ func (c *removeCommand) Init(args []string) error {
 }
 
 type RemoveMachineAPI interface {
-	// TODO (anastasiamac 2019-4-24) From Juju 3.0 this call will be removed in favour of DestroyMachinesWithParams.
-	DestroyMachines(machines ...string) ([]params.DestroyMachineResult, error)
 	DestroyMachinesWithParams(force, keep bool, maxWait *time.Duration, machines ...string) ([]params.DestroyMachineResult, error)
 	Close() error
-}
-
-// TODO(axw) 2017-03-16 #1673323
-// Drop this in Juju 3.0.
-type removeMachineAdapter struct {
-	*apiclient.Client
-}
-
-func (a removeMachineAdapter) DestroyMachines(machines ...string) ([]params.DestroyMachineResult, error) {
-	return a.destroyMachines(a.Client.DestroyMachines, machines)
-}
-
-func (a removeMachineAdapter) DestroyMachinesWithParams(force, keep bool, maxWait *time.Duration, machines ...string) ([]params.DestroyMachineResult, error) {
-	return a.destroyMachines(a.Client.ForceDestroyMachines, machines)
-}
-
-func (a removeMachineAdapter) destroyMachines(f func(...string) error, machines []string) ([]params.DestroyMachineResult, error) {
-	if err := f(machines...); err != nil {
-		return nil, err
-	}
-	results := make([]params.DestroyMachineResult, len(machines))
-	for i := range results {
-		results[i].Info = &params.DestroyMachineInfo{}
-	}
-	return results, nil
 }
 
 func (c *removeCommand) getAPIRoot() (api.Connection, error) {
@@ -138,6 +113,9 @@ func (c *removeCommand) getAPIRoot() (api.Connection, error) {
 }
 
 func (c *removeCommand) getRemoveMachineAPI() (RemoveMachineAPI, error) {
+	if c.machineAPI != nil {
+		return c.machineAPI, nil
+	}
 	root, err := c.getAPIRoot()
 	if err != nil {
 		return nil, err
@@ -145,13 +123,7 @@ func (c *removeCommand) getRemoveMachineAPI() (RemoveMachineAPI, error) {
 	if root.BestFacadeVersion("MachineManager") < 4 && c.KeepInstance {
 		return nil, errors.New("this version of Juju doesn't support --keep-instance")
 	}
-	if root.BestFacadeVersion("MachineManager") >= 3 && c.machineAPI == nil {
-		return machinemanager.NewClient(root), nil
-	}
-	if c.machineAPI != nil {
-		return c.machineAPI, nil
-	}
-	return removeMachineAdapter{apiclient.NewClient(root)}, nil
+	return machinemanager.NewClient(root), nil
 }
 
 // Run implements Command.Run.
@@ -182,58 +154,72 @@ func (c *removeCommand) Run(ctx *cmd.Context) error {
 	}
 	defer client.Close()
 
-	var results []params.DestroyMachineResult
-
-	if c.KeepInstance || c.Force {
-		results, err = client.DestroyMachinesWithParams(c.Force, c.KeepInstance, maxWait, c.MachineIds...)
-	} else {
-		results, err = client.DestroyMachines(c.MachineIds...)
-	}
+	results, err := client.DestroyMachinesWithParams(c.Force, c.KeepInstance, maxWait, c.MachineIds...)
 	if err := block.ProcessBlockedError(err, block.BlockRemove); err != nil {
 		return err
 	}
 
 	anyFailed := false
-	for i, id := range c.MachineIds {
-		result := results[i]
-		if result.Error != nil {
+	for i, result := range results {
+		// This is for backwards compatibility with controllers that
+		// don't include MachineID (and DestroyedContainers) in results
+		// TODO(jack-w-shaw) Drop this in 3.0
+		if result.Error == nil && result.Info.MachineId == "" {
+			result.Info.MachineId = c.MachineIds[i]
+		}
+		err = logRemovedMachine(ctx, result, c.KeepInstance)
+		if err != nil {
 			anyFailed = true
-			ctx.Infof("removing machine %s failed: %s", id, result.Error)
-			continue
-		}
-		if c.KeepInstance {
-			ctx.Infof("removing machine %s (but retaining cloud instance)", id)
-		} else {
-			ctx.Infof("removing machine %s", id)
-		}
-		for _, entity := range result.Info.DestroyedUnits {
-			unitTag, err := names.ParseUnitTag(entity.Tag)
-			if err != nil {
-				logger.Warningf("%s", err)
-				continue
-			}
-			ctx.Infof("- will remove %s", names.ReadableString(unitTag))
-		}
-		for _, entity := range result.Info.DestroyedStorage {
-			storageTag, err := names.ParseStorageTag(entity.Tag)
-			if err != nil {
-				logger.Warningf("%s", err)
-				continue
-			}
-			ctx.Infof("- will remove %s", names.ReadableString(storageTag))
-		}
-		for _, entity := range result.Info.DetachedStorage {
-			storageTag, err := names.ParseStorageTag(entity.Tag)
-			if err != nil {
-				logger.Warningf("%s", err)
-				continue
-			}
-			ctx.Infof("- will detach %s", names.ReadableString(storageTag))
+			ctx.Infof("%s", err)
 		}
 	}
 
 	if anyFailed {
 		return cmd.ErrSilent
+	}
+	return nil
+}
+
+func logRemovedMachine(ctx *cmd.Context, result params.DestroyMachineResult, keepInstance bool) error {
+	if result.Error != nil {
+		return errors.Errorf("removing machine failed: %s", result.Error)
+	}
+	for _, destroyContainerResult := range result.Info.DestroyedContainers {
+		err := logRemovedMachine(ctx, destroyContainerResult, keepInstance)
+		if err != nil {
+			ctx.Infof("%s", err)
+		}
+		ctx.Infof("\n")
+	}
+	id := result.Info.MachineId
+	if keepInstance {
+		ctx.Infof("removing machine %s (but retaining cloud instance)", id)
+	} else {
+		ctx.Infof("removing machine %s", id)
+	}
+	for _, entity := range result.Info.DestroyedUnits {
+		unitTag, err := names.ParseUnitTag(entity.Tag)
+		if err != nil {
+			logger.Warningf("%s", err)
+			continue
+		}
+		ctx.Infof("- will remove %s", names.ReadableString(unitTag))
+	}
+	for _, entity := range result.Info.DestroyedStorage {
+		storageTag, err := names.ParseStorageTag(entity.Tag)
+		if err != nil {
+			logger.Warningf("%s", err)
+			continue
+		}
+		ctx.Infof("- will remove %s", names.ReadableString(storageTag))
+	}
+	for _, entity := range result.Info.DetachedStorage {
+		storageTag, err := names.ParseStorageTag(entity.Tag)
+		if err != nil {
+			logger.Warningf("%s", err)
+			continue
+		}
+		ctx.Infof("- will detach %s", names.ReadableString(storageTag))
 	}
 	return nil
 }

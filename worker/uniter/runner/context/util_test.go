@@ -4,7 +4,6 @@
 package context_test
 
 import (
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -41,13 +40,13 @@ type HookContextSuite struct {
 	application *state.Application
 	unit        *state.Unit
 	machine     *state.Machine
-	relch       *state.Charm
-	relunits    map[int]*state.RelationUnit
-	storage     *runnertesting.StorageContextAccessor
+	relCh       *state.Charm
+	relUnits    map[int]*state.RelationUnit
 	clock       *testclock.Clock
 
 	st             api.Connection
 	uniter         *uniter.State
+	payloads       *uniter.PayloadFacadeClient
 	apiUnit        *uniter.Unit
 	meteredAPIUnit *uniter.Unit
 	meteredCharm   *state.Charm
@@ -80,6 +79,7 @@ func (s *HookContextSuite) SetUpTest(c *gc.C) {
 	s.st = s.OpenAPIAs(c, s.unit.Tag(), password)
 	s.uniter, err = uniter.NewFromConnection(s.st)
 	c.Assert(err, jc.ErrorIsNil)
+	s.payloads = uniter.NewPayloadFacadeClient(s.st)
 	c.Assert(s.uniter, gc.NotNil)
 	s.apiUnit, err = s.uniter.Unit(s.unit.Tag().(names.UnitTag))
 	c.Assert(err, jc.ErrorIsNil)
@@ -100,27 +100,16 @@ func (s *HookContextSuite) SetUpTest(c *gc.C) {
 	// The API is used instead of direct state access, because the API call
 	// handles synchronisation with the cache where the data must reside for
 	// config watching and retrieval to work.
-	err = s.apiUnit.SetCharmURL(sch.URL())
+	err = s.apiUnit.SetCharmURL(sch.String())
 	c.Assert(err, jc.ErrorIsNil)
-	err = s.meteredAPIUnit.SetCharmURL(s.meteredCharm.URL())
+	err = s.meteredAPIUnit.SetCharmURL(s.meteredCharm.String())
 	c.Assert(err, jc.ErrorIsNil)
 
-	s.relch = s.AddTestingCharm(c, "mysql")
-	s.relunits = map[int]*state.RelationUnit{}
+	s.relCh = s.AddTestingCharm(c, "mysql")
+	s.relUnits = map[int]*state.RelationUnit{}
 	s.apiRelunits = map[int]*uniter.RelationUnit{}
 	s.AddContextRelation(c, "db0")
 	s.AddContextRelation(c, "db1")
-
-	storageData0 := names.NewStorageTag("data/0")
-	s.storage = &runnertesting.StorageContextAccessor{
-		CStorage: map[names.StorageTag]*runnertesting.ContextStorage{
-			storageData0: {
-				storageData0,
-				storage.StorageKindBlock,
-				"/dev/sdb",
-			},
-		},
-	}
 
 	s.clock = testclock.NewClock(time.Time{})
 }
@@ -165,7 +154,7 @@ func (s *HookContextSuite) AddUnit(c *gc.C, app *state.Application) *state.Unit 
 }
 
 func (s *HookContextSuite) AddContextRelation(c *gc.C, name string) {
-	s.AddTestingApplication(c, name, s.relch)
+	s.AddTestingApplication(c, name, s.relCh)
 	eps, err := s.State.InferEndpoints("u", name)
 	c.Assert(err, jc.ErrorIsNil)
 	rel, err := s.State.AddRelation(eps...)
@@ -174,7 +163,7 @@ func (s *HookContextSuite) AddContextRelation(c *gc.C, name string) {
 	c.Assert(err, jc.ErrorIsNil)
 	err = ru.EnterScope(map[string]interface{}{"relation-name": name})
 	c.Assert(err, jc.ErrorIsNil)
-	s.relunits[rel.Id()] = ru
+	s.relUnits[rel.Id()] = ru
 	apiRel, err := s.uniter.Relation(rel.Tag().(names.RelationTag))
 	c.Assert(err, jc.ErrorIsNil)
 	apiRelUnit, err := apiRel.Unit(s.apiUnit.Tag())
@@ -215,7 +204,6 @@ func (s *HookContextSuite) getHookContext(c *gc.C, uuid string, relid int, remot
 		CharmMetrics:        nil,
 		ActionData:          nil,
 		AssignedMachineTag:  s.machine.Tag().(names.MachineTag),
-		Storage:             s.storage,
 		StorageTag:          storageTag,
 		Paths:               runnertesting.NewRealPaths(c),
 		Clock:               s.clock,
@@ -361,17 +349,6 @@ func (s *HookContextSuite) AssertNotWorkloadContext(c *gc.C, ctx *runnercontext.
 	c.Assert(workloadName, gc.Equals, "")
 }
 
-func (s *HookContextSuite) AssertSecretContext(c *gc.C, ctx *runnercontext.HookContext, secretURL string) {
-	URL, _ := ctx.SecretURL()
-	c.Assert(URL, gc.Equals, secretURL)
-}
-
-func (s *HookContextSuite) AssertNotSecretContext(c *gc.C, ctx *runnercontext.HookContext) {
-	workloadName, err := ctx.SecretURL()
-	c.Assert(err, gc.NotNil)
-	c.Assert(workloadName, gc.Equals, "")
-}
-
 type BlockHelper struct {
 	blockClient *block.Client
 }
@@ -424,6 +401,10 @@ func (MockEnvPaths) GetCharmDir() string {
 	return "path-to-charm"
 }
 
+func (MockEnvPaths) GetResourcesDir() string {
+	return "path-to-resources"
+}
+
 func (MockEnvPaths) GetBaseDir() string {
 	return "path-to-base"
 }
@@ -444,8 +425,4 @@ func (MockEnvPaths) GetJujucServerSocket(remote bool) sockets.Socket {
 
 func (MockEnvPaths) GetMetricsSpoolDir() string {
 	return "path-to-metrics-spool-dir"
-}
-
-func (MockEnvPaths) ComponentDir(name string) string {
-	return filepath.Join("path-to-base-dir", name)
 }

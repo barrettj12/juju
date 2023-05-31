@@ -1,21 +1,6 @@
 // Copyright 2012, 2013 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
-// Package dummy implements an environment provider for testing
-// purposes, registered with environs under the name "dummy".
-//
-// The configuration YAML for the testing environment
-// must specify a "controller" property with a boolean
-// value. If this is true, a controller will be started
-// when the environment is bootstrapped.
-//
-// The configuration data also accepts a "broken" property
-// of type boolean. If this is non-empty, any operation
-// after the environment has been opened will return
-// the error "broken environment", and will also log that.
-//
-// The DNS name of instances is the same as the Id,
-// with ".dns" appended.
 package dummy
 
 import (
@@ -35,6 +20,7 @@ import (
 	"github.com/juju/errors"
 	"github.com/juju/jsonschema"
 	"github.com/juju/loggo"
+	mgotesting "github.com/juju/mgo/v2/testing"
 	"github.com/juju/names/v4"
 	"github.com/juju/pubsub/v2"
 	"github.com/juju/retry"
@@ -84,7 +70,6 @@ import (
 	"github.com/juju/juju/storage"
 	"github.com/juju/juju/testing"
 	coretools "github.com/juju/juju/tools"
-	jujuversion "github.com/juju/juju/version"
 	"github.com/juju/juju/worker/gate"
 	"github.com/juju/juju/worker/lease"
 	"github.com/juju/juju/worker/modelcache"
@@ -125,7 +110,6 @@ func SampleConfig() testing.Attrs {
 		"firewall-mode":             config.FwInstance,
 		"ssl-hostname-verification": true,
 		"development":               false,
-		"default-series":            jujuversion.DefaultSupportedLTS(),
 		"default-space":             "",
 		"secret":                    "pork",
 		"controller":                true,
@@ -145,16 +129,16 @@ func PatchTransientErrorInjectionChannel(c chan error) func() {
 // mongoInfo returns a mongo.MongoInfo which allows clients to connect to the
 // shared dummy state, if it exists.
 func mongoInfo() mongo.MongoInfo {
-	if gitjujutesting.MgoServer.Addr() == "" {
+	if mgotesting.MgoServer.Addr() == "" {
 		panic("dummy environ state tests must be run with MgoTestPackage")
 	}
-	mongoPort := strconv.Itoa(gitjujutesting.MgoServer.Port())
+	mongoPort := strconv.Itoa(mgotesting.MgoServer.Port())
 	addrs := []string{net.JoinHostPort("localhost", mongoPort)}
 	return mongo.MongoInfo{
 		Info: mongo.Info{
 			Addrs:      addrs,
 			CACert:     testing.CACert,
-			DisableTLS: !gitjujutesting.MgoServer.SSLEnabled(),
+			DisableTLS: !mgotesting.MgoServer.SSLEnabled(),
 		},
 	}
 }
@@ -293,7 +277,6 @@ type environ struct {
 	cloud        environscloudspec.CloudSpec
 	ecfgMutex    sync.Mutex
 	ecfgUnlocked *environConfig
-	spacesMutex  sync.RWMutex
 }
 
 var _ environs.Environ = (*environ)(nil)
@@ -353,7 +336,7 @@ func Reset(c *gc.C) {
 	}
 	if mongoAlive() {
 		err := retry.Call(retry.CallArgs{
-			Func: gitjujutesting.MgoServer.Reset,
+			Func: mgotesting.MgoServer.Reset,
 			// Only interested in retrying the intermittent
 			// 'unexpected message'.
 			IsFatalError: func(err error) bool {
@@ -439,7 +422,7 @@ func (s *environState) destroyLocked() {
 
 	if mongoAlive() {
 		logger.Debugf("resetting MgoServer")
-		_ = gitjujutesting.MgoServer.Reset()
+		_ = mgotesting.MgoServer.Reset()
 	}
 }
 
@@ -448,7 +431,7 @@ func (s *environState) destroyLocked() {
 // If it has been deliberately destroyed, we will
 // expect some errors when closing things down.
 func mongoAlive() bool {
-	return gitjujutesting.MgoServer.Addr() != ""
+	return mgotesting.MgoServer.Addr() != ""
 }
 
 // GetStateInAPIServer returns the state connection used by the API server
@@ -812,7 +795,10 @@ func (e *environ) Bootstrap(ctx environs.BootstrapContext, callCtx context.Provi
 	if err != nil {
 		return nil, err
 	}
-	arch := availableTools.Arches()[0]
+	arch, err := availableTools.OneArch()
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
 
 	defer delay()
 	if err := e.checkBroken("Bootstrap"); err != nil {
@@ -889,7 +875,7 @@ func (e *environ) Bootstrap(ctx environs.BootstrapContext, callCtx context.Provi
 			// It is set just below.
 			controller, err := state.Initialize(state.InitializeParams{
 				Clock:            clock.WallClock,
-				ControllerConfig: icfg.Controller.Config,
+				ControllerConfig: icfg.ControllerConfig,
 				ControllerModelArgs: state.ModelArgs{
 					Type:                    state.ModelTypeIAAS,
 					Owner:                   adminUser,
@@ -909,7 +895,10 @@ func (e *environ) Bootstrap(ctx environs.BootstrapContext, callCtx context.Provi
 			if err != nil {
 				return err
 			}
-			st := controller.SystemState()
+			st, err := controller.SystemState()
+			if err != nil {
+				return err
+			}
 			defer func() {
 				if err != nil {
 					controller.Close()
@@ -942,7 +931,10 @@ func (e *environ) Bootstrap(ctx environs.BootstrapContext, callCtx context.Provi
 			if err != nil {
 				return errors.Trace(err)
 			}
-			stateAuthenticator.AddHandlers(estate.mux)
+			errH := stateAuthenticator.AddHandlers(estate.mux)
+			if errH != nil {
+				return errors.Trace(errH)
+			}
 
 			machineTag := names.NewMachineTag("0")
 			estate.httpServer.StartTLS()
@@ -950,17 +942,21 @@ func (e *environ) Bootstrap(ctx environs.BootstrapContext, callCtx context.Provi
 			estate.hub = centralhub.New(machineTag, centralhub.PubsubNoOpMetrics{})
 
 			estate.leaseManager, err = leaseManager(
-				icfg.Controller.Config.ControllerUUID(),
+				icfg.ControllerConfig.ControllerUUID(),
 				st,
 			)
 			if err != nil {
 				return errors.Trace(err)
 			}
 
+			allWatcherBacking, err := state.NewAllWatcherBacking(statePool)
+			if err != nil {
+				return errors.Trace(err)
+			}
 			multiWatcherWorker, err := multiwatcher.NewWorker(multiwatcher.Config{
 				Clock:                clock.WallClock,
 				Logger:               loggo.GetLogger("dummy.multiwatcher"),
-				Backing:              state.NewAllWatcherBacking(statePool),
+				Backing:              allWatcherBacking,
 				PrometheusRegisterer: noopRegisterer{},
 			})
 			if err != nil {
@@ -1019,7 +1015,7 @@ func (e *environ) Bootstrap(ctx environs.BootstrapContext, callCtx context.Provi
 					}
 					return observer.NewRequestObserver(ctx)
 				},
-				PublicDNSName: icfg.Controller.Config.AutocertDNSName(),
+				PublicDNSName: icfg.ControllerConfig.AutocertDNSName(),
 				UpgradeComplete: func() bool {
 					return true
 				},
@@ -1209,7 +1205,7 @@ func (e *environ) StartInstance(ctx context.ProviderCallContext, args environs.S
 	if args.InstanceConfig.MachineNonce == "" {
 		return nil, errors.New("cannot start instance: missing machine nonce")
 	}
-	if args.InstanceConfig.Controller != nil {
+	if args.InstanceConfig.IsController() {
 		if args.InstanceConfig.APIInfo.Tag != names.NewMachineTag(machineId) {
 			return nil, errors.New("entity tag must match started machine")
 		}
@@ -1700,6 +1696,7 @@ func (e *environ) OpenPorts(ctx context.ProviderCallContext, rules firewall.Ingr
 	for _, r := range rules {
 		if len(r.SourceCIDRs) == 0 {
 			r.SourceCIDRs.Add(firewall.AllNetworksIPV4CIDR)
+			r.SourceCIDRs.Add(firewall.AllNetworksIPV6CIDR)
 		}
 		found := false
 		for _, rule := range estate.globalRules {
@@ -1727,6 +1724,10 @@ func (e *environ) ClosePorts(ctx context.ProviderCallContext, rules firewall.Ing
 	defer estate.mu.Unlock()
 	for _, r := range rules {
 		for i, rule := range estate.globalRules {
+			if len(r.SourceCIDRs) == 0 {
+				r.SourceCIDRs.Add(firewall.AllNetworksIPV4CIDR)
+				r.SourceCIDRs.Add(firewall.AllNetworksIPV6CIDR)
+			}
 			if r.String() == rule.String() {
 				estate.globalRules = estate.globalRules[:i+copy(estate.globalRules[i:], estate.globalRules[i+1:])]
 			}
@@ -1877,6 +1878,7 @@ func (inst *dummyInstance) OpenPorts(ctx context.ProviderCallContext, machineId 
 	for _, newRule := range rules {
 		if len(newRule.SourceCIDRs) == 0 {
 			newRule.SourceCIDRs.Add(firewall.AllNetworksIPV4CIDR)
+			newRule.SourceCIDRs.Add(firewall.AllNetworksIPV6CIDR)
 		}
 		found := false
 
@@ -2010,18 +2012,6 @@ func (*environ) LXDProfileNames(containerName string) ([]string, error) {
 // AssignLXDProfiles implements environs.LXDProfiler.
 func (*environ) AssignLXDProfiles(instId string, profilesNames []string, profilePosts []lxdprofile.ProfilePost) (current []string, err error) {
 	return profilesNames, nil
-}
-
-// SSHAddresses implements environs.SSHAddresses.
-// For testing we cut "100.100.100.100" out of this list.
-func (*environ) SSHAddresses(ctx context.ProviderCallContext, addresses network.SpaceAddresses) (network.SpaceAddresses, error) {
-	var rv network.SpaceAddresses
-	for _, addr := range addresses {
-		if addr.Value != "100.100.100.100" {
-			rv = append(rv, addr)
-		}
-	}
-	return rv, nil
 }
 
 // SuperSubnets implements environs.SuperSubnets

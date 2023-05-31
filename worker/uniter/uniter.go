@@ -18,7 +18,6 @@ import (
 	"github.com/juju/worker/v3/catacomb"
 
 	"github.com/juju/juju/agent/tools"
-	"github.com/juju/juju/api/agent/secretsmanager"
 	"github.com/juju/juju/api/agent/uniter"
 	"github.com/juju/juju/core/leadership"
 	"github.com/juju/juju/core/life"
@@ -45,16 +44,15 @@ import (
 	"github.com/juju/juju/worker/uniter/runner"
 	"github.com/juju/juju/worker/uniter/runner/context"
 	"github.com/juju/juju/worker/uniter/runner/jujuc"
-	"github.com/juju/juju/worker/uniter/secrets"
 	"github.com/juju/juju/worker/uniter/storage"
 	"github.com/juju/juju/worker/uniter/upgradeseries"
 	"github.com/juju/juju/worker/uniter/verifycharmprofile"
 )
 
-var (
+const (
 	// ErrCAASUnitDead is the error returned from terminate or init
 	// if the unit is Dead.
-	ErrCAASUnitDead = errors.New("unit dead")
+	ErrCAASUnitDead = errors.ConstError("unit dead")
 )
 
 // A UniterExecutionObserver gets the appropriate methods called when a hook
@@ -74,16 +72,14 @@ type RebootQuerier interface {
 // RemoteInitFunc is used to init remote state
 type RemoteInitFunc func(remotestate.ContainerRunningStatus, <-chan struct{}) error
 
-// Uniter implements the capabilities of the unit agent. It is not intended to
-// implement the actual *behaviour* of the unit agent; that responsibility is
-// delegated to Mode values, which are expected to react to events and direct
-// the uniter's responses to them.
+// Uniter implements the capabilities of the unit agent, for example running hooks.
 type Uniter struct {
 	catacomb                     catacomb.Catacomb
 	st                           *uniter.State
-	secrets                      *secretsmanager.Client
 	paths                        Paths
 	unit                         *uniter.Unit
+	resources                    *uniter.ResourcesFacadeClient
+	payloads                     *uniter.PayloadFacadeClient
 	modelType                    model.ModelType
 	sidecar                      bool
 	enforcedCharmModifiedVersion int
@@ -110,10 +106,6 @@ type Uniter struct {
 	charmDirGuard     fortress.Guard
 
 	hookLock machinelock.Lock
-
-	// secretRotateWatcherFunc returns a watcher that triggers when secrets
-	// created by this unit's application should be rotated.
-	secretRotateWatcherFunc remotestate.SecretRotateWatcherFunc
 
 	Probe Probe
 
@@ -175,11 +167,11 @@ type Uniter struct {
 // UniterParams hold all the necessary parameters for a new Uniter.
 type UniterParams struct {
 	UniterFacade                  *uniter.State
-	SecretsFacade                 *secretsmanager.Client
+	ResourcesFacade               *uniter.ResourcesFacadeClient
+	PayloadFacade                 *uniter.PayloadFacadeClient
 	UnitTag                       names.UnitTag
 	ModelType                     model.ModelType
 	LeadershipTrackerFunc         func(names.UnitTag) leadership.TrackerWorker
-	SecretRotateWatcherFunc       remotestate.SecretRotateWatcherFunc
 	DataDir                       string
 	Downloader                    charm.Downloader
 	MachineLock                   machinelock.Lock
@@ -248,12 +240,12 @@ func newUniter(uniterParams *UniterParams) func() (worker.Worker, error) {
 	startFunc := func() (worker.Worker, error) {
 		u := &Uniter{
 			st:                            uniterParams.UniterFacade,
-			secrets:                       uniterParams.SecretsFacade,
+			resources:                     uniterParams.ResourcesFacade,
+			payloads:                      uniterParams.PayloadFacade,
 			paths:                         NewPaths(uniterParams.DataDir, uniterParams.UnitTag, uniterParams.SocketConfig),
 			modelType:                     uniterParams.ModelType,
 			hookLock:                      uniterParams.MachineLock,
 			leadershipTracker:             uniterParams.LeadershipTrackerFunc(uniterParams.UnitTag),
-			secretRotateWatcherFunc:       uniterParams.SecretRotateWatcherFunc,
 			charmDirGuard:                 uniterParams.CharmDirGuard,
 			updateStatusAt:                uniterParams.UpdateStatusSignal,
 			hookRetryStrategy:             uniterParams.HookRetryStrategy,
@@ -305,7 +297,7 @@ func (u *Uniter) loop(unitTag names.UnitTag) (err error) {
 		if err != nil {
 			errorString = err.Error()
 		}
-		if errors.Cause(err) == ErrCAASUnitDead {
+		if errors.Is(err, ErrCAASUnitDead) {
 			errorString = err.Error()
 			err = nil
 		}
@@ -384,7 +376,6 @@ func (u *Uniter) loop(unitTag names.UnitTag) (err error) {
 			remotestate.WatcherConfig{
 				State:                         remotestate.NewAPIState(u.st),
 				LeadershipTracker:             u.leadershipTracker,
-				SecretRotateWatcherFunc:       u.secretRotateWatcherFunc,
 				UnitTag:                       unitTag,
 				UpdateStatusChannel:           u.updateStatusAt,
 				CommandChannel:                u.commandChannel,
@@ -484,8 +475,7 @@ func (u *Uniter) loop(unitTag names.UnitTag) (err error) {
 			Commands: runcommands.NewCommandsResolver(
 				u.commands, watcher.CommandCompleted,
 			),
-			Secrets: secrets.NewSecretsResolver(watcher.RotateSecretCompleted),
-			Logger:  u.logger,
+			Logger: u.logger,
 		}
 		if u.modelType == model.CAAS && u.isRemoteUnit {
 			cfg.OptionalResolvers = append(cfg.OptionalResolvers, container.NewRemoteContainerInitResolver())
@@ -531,31 +521,34 @@ func (u *Uniter) loop(unitTag names.UnitTag) (err error) {
 
 			err = u.translateResolverErr(err)
 
-			switch cause := errors.Cause(err); cause {
-			case nil:
+			switch {
+			case err == nil:
 				// Loop back around.
-			case resolver.ErrLoopAborted:
+			case errors.Is(err, resolver.ErrLoopAborted):
 				err = u.catacomb.ErrDying()
-			case operation.ErrNeedsReboot:
+			case errors.Is(err, operation.ErrNeedsReboot):
 				err = jworker.ErrRebootMachine
-			case operation.ErrHookFailed:
+			case errors.Is(err, operation.ErrHookFailed):
 				// Loop back around. The resolver can tell that it is in
 				// an error state by inspecting the operation state.
 				err = nil
-			case resolver.ErrTerminate:
+			case errors.Is(err, runner.ErrTerminated):
+				localState.HookWasShutdown = true
+				err = nil
+			case errors.Is(err, resolver.ErrUnitDead):
 				err = u.terminate()
-			case resolver.ErrRestart:
+			case errors.Is(err, resolver.ErrRestart):
 				// make sure we update the two values used above in
 				// creating LocalState.
 				charmURL = localState.CharmURL
 				charmModifiedVersion = localState.CharmModifiedVersion
 				// leave err assigned, causing loop to break
-			case jworker.ErrTerminateAgent:
+			case errors.Is(err, jworker.ErrTerminateAgent):
 				// terminate agent
 			default:
 				// We need to set conflicted from here, because error
 				// handling is outside of the resolver's control.
-				if operation.IsDeployConflictError(cause) {
+				if _, is := errors.AsType[*operation.DeployConflictError](err); is {
 					localState.Conflicted = true
 					err = setAgentStatus(u, status.Error, "upgrade failed", nil)
 				} else {
@@ -564,14 +557,18 @@ func (u *Uniter) loop(unitTag names.UnitTag) (err error) {
 			}
 		}
 
-		if errors.Cause(err) != resolver.ErrRestart {
+		if !errors.Is(err, resolver.ErrRestart) {
 			break
 		}
 	}
 	return err
 }
 
-func (u *Uniter) verifyCharmProfile(curl *corecharm.URL) error {
+func (u *Uniter) verifyCharmProfile(url string) error {
+	curl, err := corecharm.ParseURL(url)
+	if err != nil {
+		return errors.Trace(err)
+	}
 	// NOTE: this is very similar code to verifyCharmProfile.NextOp,
 	// if you make changes here, check to see if they are needed there.
 	ch, err := u.st.Charm(curl)
@@ -620,11 +617,11 @@ func (u *Uniter) verifyCharmProfile(curl *corecharm.URL) error {
 // charmState returns data for the local state setup.
 // While gathering the data, look for interrupted Install or pending
 // charm upgrade, execute if found.
-func (u *Uniter) charmState() (bool, *corecharm.URL, int, error) {
+func (u *Uniter) charmState() (bool, string, int, error) {
 	// Install is a special case, as it must run before there
 	// is any remote state, and before the remote state watcher
 	// is started.
-	var charmURL *corecharm.URL
+	var charmURL string
 	var charmModifiedVersion int
 
 	canApplyCharmProfile, err := u.unit.CanApplyLXDProfile()
@@ -714,7 +711,10 @@ func (u *Uniter) terminate() error {
 // an individual agent for that unit.
 func (u *Uniter) stopUnitError() error {
 	u.logger.Debugf("u.modelType: %s", u.modelType)
-	if u.modelType == model.CAAS && !u.sidecar {
+	if u.modelType == model.CAAS {
+		if u.sidecar {
+			return errors.WithType(jworker.ErrTerminateAgent, ErrCAASUnitDead)
+		}
 		return ErrCAASUnitDead
 	}
 	return jworker.ErrTerminateAgent
@@ -805,11 +805,11 @@ func (u *Uniter) init(unitTag names.UnitTag) (err error) {
 	}
 	contextFactory, err := context.NewContextFactory(context.FactoryConfig{
 		State:            u.st,
-		Secrets:          u.secrets,
 		Unit:             u.unit,
+		Resources:        u.resources,
+		Payloads:         u.payloads,
 		Tracker:          u.leadershipTracker,
 		GetRelationInfos: u.relationStateTracker.GetInfo,
-		Storage:          u.storage,
 		Paths:            u.paths,
 		Clock:            u.clock,
 		Logger:           u.logger.Child("context"),
@@ -906,11 +906,11 @@ func (u *Uniter) Wait() error {
 	return u.catacomb.Wait()
 }
 
-func (u *Uniter) getApplicationCharmURL() (*corecharm.URL, error) {
+func (u *Uniter) getApplicationCharmURL() (string, error) {
 	// TODO(fwereade): pretty sure there's no reason to make 2 API calls here.
 	app, err := u.st.Application(u.unit.ApplicationTag())
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	charmURL, _, err := app.CharmURL()
 	return charmURL, err
@@ -960,9 +960,6 @@ func (u *Uniter) reportHookError(hookInfo hook.Info) error {
 			hookName = fmt.Sprintf("%s-%s", relationName, hookInfo.Kind)
 			hookMessage = hookName
 		}
-	}
-	if hookInfo.Kind.IsSecret() {
-		statusData["secret-url"] = hookInfo.SecretURL
 	}
 	statusData["hook"] = hookName
 	statusMessage := fmt.Sprintf("hook failed: %q", hookMessage)

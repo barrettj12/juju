@@ -4,8 +4,9 @@
 package state
 
 import (
-	"github.com/juju/juju/state/cloudimagemetadata"
 	"github.com/juju/mgo/v2"
+
+	"github.com/juju/juju/state/cloudimagemetadata"
 
 	"github.com/juju/juju/state/bakerystorage"
 )
@@ -21,25 +22,25 @@ var (
 // allCollections should be the single source of truth for information about
 // any collection we use. It's broken up into 4 main sections:
 //
-//  * infrastructure: we really don't have any business touching these once
-//    we've created them. They should have the rawAccess attribute set, so that
-//    multiModelRunner will consider them forbidden.
+//   - infrastructure: we really don't have any business touching these once
+//     we've created them. They should have the rawAccess attribute set, so that
+//     multiModelRunner will consider them forbidden.
 //
-//  * global: these hold information external to models. They may include
-//    model metadata, or references; but they're generally not relevant
-//    from the perspective of a given model.
+//   - global: these hold information external to models. They may include
+//     model metadata, or references; but they're generally not relevant
+//     from the perspective of a given model.
 //
-//  * local (in opposition to global; and for want of a better term): these
-//    hold information relevant *within* specific models (machines,
-//    applications, relations, settings, bookkeeping, etc) and should generally be
-//    read via an modelStateCollection, and written via a multiModelRunner. This is
-//    the most common form of collection, and the above access should usually
-//    be automatic via Database.Collection and Database.Runner.
+//   - local (in opposition to global; and for want of a better term): these
+//     hold information relevant *within* specific models (machines,
+//     applications, relations, settings, bookkeeping, etc) and should generally be
+//     read via an modelStateCollection, and written via a multiModelRunner. This is
+//     the most common form of collection, and the above access should usually
+//     be automatic via Database.Collection and Database.Runner.
 //
-//  * raw-access: there's certainly data that's a poor fit for mgo/txn. Most
-//    forms of logs, for example, will benefit both from the speedy insert and
-//    worry-free bulk deletion; so raw-access collections are fine. Just don't
-//    try to run transactions that reference them.
+//   - raw-access: there's certainly data that's a poor fit for mgo/txn. Most
+//     forms of logs, for example, will benefit both from the speedy insert and
+//     worry-free bulk deletion; so raw-access collections are fine. Just don't
+//     try to run transactions that reference them.
 //
 // Please do not use collections not referenced here; and when adding new
 // collections, please document them, and make an effort to put them in an
@@ -571,26 +572,6 @@ func allCollections() CollectionSchema {
 		// eg addresses.
 		cloudServicesC: {},
 
-		secretMetadataC: {
-			global: true,
-			indexes: []mgo.Index{{
-				Key: []string{"controller-uuid", "model-uuid", "_id"},
-			}},
-		},
-
-		secretValuesC: {
-			global: true,
-		},
-
-		secretRotateC: {
-			global: true,
-			indexes: []mgo.Index{{
-				Key: []string{"owner"},
-			}},
-		},
-
-		// ----------------------
-
 		// Raw-access collections
 		// ======================
 
@@ -667,6 +648,7 @@ const (
 	settingsC                  = "settings"
 	generationsC               = "generations"
 	refcountsC                 = "refcounts"
+	resourcesC                 = "resources"
 	sshHostKeysC               = "sshhostkeys"
 	spacesC                    = "spaces"
 	statusesC                  = "statuses"
@@ -691,8 +673,6 @@ const (
 	volumeAttachmentPlanC      = "volumeattachmentplan"
 	volumesC                   = "volumes"
 
-	// "resources" (see state/resources_mongo.go)
-
 	// Cross model relations
 	applicationOffersC   = "applicationOffers"
 	remoteApplicationsC  = "remoteApplications"
@@ -701,9 +681,4 @@ const (
 	externalControllersC = "externalControllers"
 	relationNetworksC    = "relationNetworks"
 	firewallRulesC       = "firewallRules"
-
-	// Secrets
-	secretMetadataC = "secretMetadata"
-	secretValuesC   = "secretValues"
-	secretRotateC   = "secretRotate"
 )

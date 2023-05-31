@@ -8,26 +8,26 @@ import (
 	"github.com/juju/version/v2"
 
 	"github.com/juju/juju/rpc/params"
+	"github.com/juju/juju/upgrades/upgradevalidation"
 	jujuversion "github.com/juju/juju/version"
 )
 
-// minAgentMinorVersions defines the minimum minor version
-// for a major agent version making api calls to a controller
-// with a newer major version.
-var minAgentMinorVersions = map[int]int{
-	2: 9,
-}
-
-func checkClientVersion(userLogin bool, clientVersion version.Number) func(facadeName, methodName string) error {
+func checkClientVersion(userLogin bool, callerVersion version.Number) func(facadeName, methodName string) error {
 	return func(facadeName, methodName string) error {
+		serverVersion := jujuversion.Current
 		incompatibleClientError := &params.IncompatibleClientError{
-			ServerVersion: jujuversion.Current,
+			ServerVersion: serverVersion,
 		}
 		// If client or server versions are more than one major version apart,
 		// reject the call immediately.
-		if clientVersion.Major < jujuversion.Current.Major-1 || clientVersion.Major > jujuversion.Current.Major+1 {
+		if callerVersion.Major < serverVersion.Major-1 || callerVersion.Major > serverVersion.Major+1 {
 			return incompatibleClientError
 		}
+		// If the client major version is greater and the minor version is not 0, reject.
+		if callerVersion.Major > serverVersion.Major && callerVersion.Minor != 0 {
+			return incompatibleClientError
+		}
+
 		// Connection pings always need to be allowed.
 		if facadeName == "Pinger" && methodName == "Ping" {
 			return nil
@@ -35,8 +35,8 @@ func checkClientVersion(userLogin bool, clientVersion version.Number) func(facad
 
 		if !userLogin {
 			// Only recent older agents can make api calls.
-			if minAgentVersion, ok := minAgentMinorVersions[clientVersion.Major]; !ok || minAgentVersion > clientVersion.Minor {
-				logger.Debugf("rejected agent api all %v.%v for agent version %v", facadeName, methodName, clientVersion)
+			if minAgentVersion, ok := upgradevalidation.MinAgentVersions[serverVersion.Major]; !ok || callerVersion.Compare(minAgentVersion) < 0 {
+				logger.Warningf("rejected agent api all %v.%v for agent version %v", facadeName, methodName, callerVersion)
 				return incompatibleClientError
 			}
 			return nil
@@ -52,9 +52,19 @@ func checkClientVersion(userLogin bool, clientVersion version.Number) func(facad
 			return nil
 		}
 
+		// Check whitelisted client versions.
+		if minClientVersion, ok := upgradevalidation.MinClientVersions[serverVersion.Major]; ok && callerVersion.Compare(minClientVersion) >= 0 {
+			return nil
+		}
+
+		// Check whitelisted server versions.
+		if minServerVersion, ok := upgradevalidation.MinClientVersions[callerVersion.Major]; ok && serverVersion.Compare(minServerVersion) >= 0 {
+			return nil
+		}
+
 		// The migration worker makes calls masquerading as a user
 		// so we need to treat those separately.
-		olderClient := clientVersion.Major < jujuversion.Current.Major
+		olderClient := callerVersion.Major < serverVersion.Major
 		validMigrationCall := isMethodAllowedForMigrate(facadeName, methodName)
 		if olderClient && !validMigrationCall {
 			return incompatibleClientError
@@ -111,12 +121,11 @@ var allowedDifferentClientMethods = map[string]set.Strings{
 // a major version greater than that of the controller.
 var allowedMethodsForUpgrade = map[string]set.Strings{
 	"Client": set.NewStrings(
-		"SetModelAgentVersion",
 		"FindTools",
-		"AbortCurrentUpgrade",
 	),
-	"ModelManager": set.NewStrings(
-		"ValidateModelUpgrades",
+	"ModelUpgrader": set.NewStrings(
+		"UpgradeModel",
+		"AbortModelUpgrade",
 	),
 	"ModelConfig": set.NewStrings(
 		"ModelGet",
@@ -124,6 +133,7 @@ var allowedMethodsForUpgrade = map[string]set.Strings{
 	"Controller": set.NewStrings(
 		"ModelConfig",
 		"ControllerConfig",
+		"ControllerVersion",
 		"CloudSpec",
 	),
 }

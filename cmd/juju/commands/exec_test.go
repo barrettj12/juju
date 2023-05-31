@@ -639,8 +639,8 @@ func (s *ExecSuite) TestSingleResponse(c *gc.C) {
 	mock := s.setupMockAPI()
 	mock.setMachinesAlive("0")
 	mockResponse := mockResponse{
-		stdout:     "stdout\n",
-		stderr:     "stderr\n",
+		stdout:     "stdout",
+		stderr:     "stderr",
 		code:       "42",
 		machineTag: "machine-0",
 	}
@@ -673,7 +673,7 @@ func (s *ExecSuite) TestSingleResponse(c *gc.C) {
 	}{{
 		message:    "smart (default)",
 		stdout:     "stdout\n",
-		stderr:     "stderr\n",
+		stderr:     "stderr",
 		errorMatch: "subprocess encountered error code 42",
 	}, {
 		message: "yaml output",
@@ -713,9 +713,6 @@ func (s *ExecSuite) setupMockAPI() *mockExecAPI {
 
 type mockExecAPI struct {
 	action.APIClient
-	stdout string
-	stderr string
-	code   int
 	// machines, applications, units
 	machines        map[string]bool
 	execResponses   map[string]actionapi.ActionResult
@@ -822,10 +819,12 @@ func (m *mockExecAPI) RunOnAllMachines(commands string, timeout time.Duration) (
 				Error: exec.ErrCancelled,
 			}
 		}
-		result.Actions = append(result.Actions, actionapi.ActionReference{
-			ID:       response.Action.ID,
-			Receiver: response.Action.Receiver,
-			Error:    response.Error,
+		result.Actions = append(result.Actions, actionapi.ActionResult{
+			Action: &actionapi.Action{
+				ID:       response.Action.ID,
+				Receiver: response.Action.Receiver,
+			},
+			Error: response.Error,
 		})
 	}
 
@@ -844,10 +843,12 @@ func (m *mockExecAPI) Run(runParams actionapi.RunParams) (actionapi.EnqueuedActi
 	for _, id := range runParams.Machines {
 		response, found := m.execResponses[id]
 		if found {
-			result.Actions = append(result.Actions, actionapi.ActionReference{
-				ID:       response.Action.ID,
-				Receiver: response.Action.Receiver,
-				Error:    response.Error,
+			result.Actions = append(result.Actions, actionapi.ActionResult{
+				Action: &actionapi.Action{
+					ID:       response.Action.ID,
+					Receiver: response.Action.Receiver,
+				},
+				Error: response.Error,
 			})
 		}
 	}
@@ -855,10 +856,12 @@ func (m *mockExecAPI) Run(runParams actionapi.RunParams) (actionapi.EnqueuedActi
 	for _, id := range runParams.Units {
 		response, found := m.execResponses[id]
 		if found {
-			result.Actions = append(result.Actions, actionapi.ActionReference{
-				ID:       response.Action.ID,
-				Receiver: response.Action.Receiver,
-				Error:    response.Error,
+			result.Actions = append(result.Actions, actionapi.ActionResult{
+				Action: &actionapi.Action{
+					ID:       response.Action.ID,
+					Receiver: response.Action.Receiver,
+				},
+				Error: response.Error,
 			})
 		}
 	}

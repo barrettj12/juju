@@ -67,11 +67,11 @@ type BackupsMetadataResult struct {
 	Machine  string         `json:"machine"`
 	Hostname string         `json:"hostname"`
 	Version  version.Number `json:"version"`
-	Series   string         `json:"series"`
+	// TODO(juju3) - remove series
+	Series string `json:"series"`
+	Base   string `json:"base"`
 
-	CACert       string `json:"ca-cert"`
-	CAPrivateKey string `json:"ca-private-key"`
-	Filename     string `json:"filename"`
+	Filename string `json:"filename"`
 
 	// FormatVersion stores the version of the backup format.
 	// All unversioned backup files are considered 0,

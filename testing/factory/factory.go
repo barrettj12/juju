@@ -317,7 +317,7 @@ func (factory *Factory) MakeMachineNested(c *gc.C, parentId string, params *Mach
 	c.Assert(err, jc.ErrorIsNil)
 	err = m.SetProvisioned(params.InstanceId, params.DisplayName, params.Nonce, params.Characteristics)
 	c.Assert(err, jc.ErrorIsNil)
-	current := testing.CurrentVersion(c)
+	current := testing.CurrentVersion()
 	err = m.SetAgentVersion(current)
 	c.Assert(err, jc.ErrorIsNil)
 	return m
@@ -383,7 +383,7 @@ func (factory *Factory) makeMachineReturningPassword(c *gc.C, params *MachinePar
 		err := machine.SetProviderAddresses(params.Addresses...)
 		c.Assert(err, jc.ErrorIsNil)
 	}
-	current := testing.CurrentVersion(c)
+	current := testing.CurrentVersion()
 	err = machine.SetAgentVersion(current)
 	c.Assert(err, jc.ErrorIsNil)
 	return machine, params.Password
@@ -393,9 +393,11 @@ func (factory *Factory) makeMachineReturningPassword(c *gc.C, params *MachinePar
 // Sensible default values are substituted for missing ones.
 // Supported charms depend on the charm/testing package.
 // Currently supported charms:
-//   all-hooks, category, dummy, logging, monitoring, mysql,
-//   mysql-alternative, riak, terracotta, upgrade1, upgrade2, varnish,
-//   varnish-alternative, wordpress.
+//
+//	all-hooks, category, dummy, logging, monitoring, mysql,
+//	mysql-alternative, riak, terracotta, upgrade1, upgrade2, varnish,
+//	varnish-alternative, wordpress.
+//
 // If params is not specified, defaults are used.
 func (factory *Factory) MakeCharm(c *gc.C, params *CharmParams) *state.Charm {
 	if params == nil {
@@ -472,7 +474,7 @@ func (factory *Factory) MakeApplication(c *gc.C, params *ApplicationParams) *sta
 	return app
 }
 
-// MakeApplication creates an application with the specified parameters, substituting
+// MakeApplicationReturningPassword creates an application with the specified parameters, substituting
 // sane defaults for missing values.
 // If params is not specified, defaults are used.
 // It returns the application and its password.
@@ -491,9 +493,18 @@ func (factory *Factory) MakeApplicationReturningPassword(c *gc.C, params *Applic
 		params.Password, err = utils.RandomPassword()
 		c.Assert(err, jc.ErrorIsNil)
 	}
+	if params.CharmOrigin == nil {
+		chSeries := params.Charm.URL().Series
+		base, err := coreseries.GetBaseFromSeries(chSeries)
+		c.Assert(err, jc.ErrorIsNil)
+		params.CharmOrigin = &state.CharmOrigin{Platform: &state.Platform{
+			Architecture: params.Charm.URL().Architecture,
+			OS:           base.Name,
+			Series:       chSeries,
+		}}
+	}
 
-	rSt, err := factory.st.Resources()
-	c.Assert(err, jc.ErrorIsNil)
+	rSt := factory.st.Resources()
 
 	resourceMap := make(map[string]string)
 	for name, res := range params.Charm.Meta().Resources {
@@ -568,7 +579,7 @@ func (factory *Factory) MakeUnit(c *gc.C, params *UnitParams) *state.Unit {
 	return unit
 }
 
-// MakeUnit creates an application unit with specified params, filling in sane
+// MakeUnitReturningPassword creates an application unit with specified params, filling in sane
 // defaults for missing values. If params is not specified, defaults are used.
 // The unit and its password are returned.
 //
@@ -631,7 +642,8 @@ func (factory *Factory) MakeUnitReturningPassword(c *gc.C, params *UnitParams) (
 	}
 
 	if params.SetCharmURL {
-		applicationCharmURL, _ := params.Application.CharmURL()
+		applicationCharmURLStr, _ := params.Application.CharmURL()
+		applicationCharmURL, _ := charm.ParseURL(*applicationCharmURLStr)
 		err = unit.SetCharmURL(applicationCharmURL)
 		c.Assert(err, jc.ErrorIsNil)
 	}
@@ -678,14 +690,14 @@ func (factory *Factory) MakeMetric(c *gc.C, params *MetricParams) *state.MetricB
 		}}
 	}
 
-	chURL, ok := params.Unit.CharmURL()
-	c.Assert(ok, gc.Equals, true)
+	chURL := params.Unit.CharmURL()
+	c.Assert(chURL, gc.NotNil)
 
 	metric, err := factory.st.AddMetrics(
 		state.BatchParam{
 			UUID:     utils.MustNewUUID().String(),
 			Created:  *params.Time,
-			CharmURL: chURL.String(),
+			CharmURL: *chURL,
 			Metrics:  params.Metrics,
 			Unit:     params.Unit.UnitTag(),
 		})

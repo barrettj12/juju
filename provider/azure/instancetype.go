@@ -8,8 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2021-11-01/compute"
-	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v2"
 	"github.com/juju/errors"
 	"github.com/juju/utils/v3/arch"
 
@@ -442,8 +441,8 @@ var machineSizeCost = []string{
 }
 
 // newInstanceType creates an InstanceType based on a VirtualMachineSize.
-func newInstanceType(size compute.VirtualMachineSize) instances.InstanceType {
-	sizeName := to.String(size.Name)
+func newInstanceType(size armcompute.VirtualMachineSize) instances.InstanceType {
+	sizeName := toValue(size.Name)
 	// Actual instance type names often are suffixed with _v3, _v4 etc. We always
 	// prefer the highest version number.
 	namePart := instSizeVersionRegexp.ReplaceAllString(sizeName, "$name")
@@ -485,15 +484,16 @@ func newInstanceType(size compute.VirtualMachineSize) instances.InstanceType {
 
 	vtype := "Hyper-V"
 	return instances.InstanceType{
-		Id:       sizeName,
-		Name:     sizeName,
-		Arches:   []string{arch.AMD64},
-		CpuCores: uint64(to.Int32(size.NumberOfCores)),
-		Mem:      uint64(to.Int32(size.MemoryInMB)),
+		Id:   sizeName,
+		Name: sizeName,
+		// TODO(wallyworld) - add arm64 once supported
+		Arch:     arch.AMD64,
+		CpuCores: uint64(toValue(size.NumberOfCores)),
+		Mem:      uint64(toValue(size.MemoryInMB)),
 		// NOTE(axw) size.OsDiskSizeInMB is the *maximum*
 		// OS-disk size. When we create a VM, we can create
 		// one that is smaller.
-		RootDisk: mbToMib(uint64(to.Int32(size.OsDiskSizeInMB))),
+		RootDisk: mbToMib(uint64(toValue(size.OSDiskSizeInMB))),
 		Cost:     uint64(cost),
 		VirtType: &vtype,
 		// tags are not currently supported by azure
@@ -520,19 +520,22 @@ func mbToMib(mb uint64) uint64 {
 //
 // NOTE(axw) for now we ignore simplestreams altogether, and go straight to
 // Azure's image registry.
-func findInstanceSpec(
+func (env *azureEnviron) findInstanceSpec(
 	ctx context.ProviderCallContext,
-	client compute.VirtualMachineImagesClient,
 	instanceTypesMap map[string]instances.InstanceType,
 	constraint *instances.InstanceConstraint,
 	imageStream string,
 ) (*instances.InstanceSpec, error) {
 
-	if !constraintHasArch(constraint, arch.AMD64) {
+	if constraint.Arch != arch.AMD64 {
 		// Azure only supports AMD64.
 		return nil, errors.NotFoundf("%s in arch constraints", arch.AMD64)
 	}
 
+	client, err := env.imagesClient()
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
 	image, err := imageutils.SeriesImage(ctx, constraint.Series, imageStream, constraint.Region, client)
 	if err != nil {
 		return nil, errors.Trace(err)
@@ -545,15 +548,6 @@ func findInstanceSpec(
 	}
 	constraint.Constraints = defaultToBaselineSpec(constraint.Constraints)
 	return instances.FindInstanceSpec(images, constraint, instanceTypes)
-}
-
-func constraintHasArch(constraint *instances.InstanceConstraint, arch string) bool {
-	for _, constraintArch := range constraint.Arches {
-		if constraintArch == arch {
-			return true
-		}
-	}
-	return false
 }
 
 // If you specify no constraints at all, you're going to get the smallest

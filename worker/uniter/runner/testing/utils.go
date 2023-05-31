@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 	"github.com/juju/worker/v3"
 	gc "gopkg.in/check.v1"
@@ -15,23 +14,15 @@ import (
 	"github.com/juju/juju/core/leadership"
 	"github.com/juju/juju/juju/sockets"
 	"github.com/juju/juju/storage"
-	"github.com/juju/juju/worker/uniter/runner/jujuc"
 )
-
-type fops interface {
-	// MkDir provides the functionality of gc.C.MkDir().
-	MkDir() string
-}
 
 // RealPaths implements Paths for tests that do touch the filesystem.
 type RealPaths struct {
-	tools         string
-	charm         string
-	base          string
-	socket        sockets.Socket
-	metricsspool  string
-	componentDirs map[string]string
-	fops          fops
+	tools        string
+	charm        string
+	base         string
+	socket       sockets.Socket
+	metricsspool string
 }
 
 func osDependentSockPath(c *gc.C) sockets.Socket {
@@ -44,13 +35,11 @@ func osDependentSockPath(c *gc.C) sockets.Socket {
 
 func NewRealPaths(c *gc.C) RealPaths {
 	return RealPaths{
-		tools:         c.MkDir(),
-		charm:         c.MkDir(),
-		base:          c.MkDir(),
-		socket:        osDependentSockPath(c),
-		metricsspool:  c.MkDir(),
-		componentDirs: make(map[string]string),
-		fops:          c,
+		tools:        c.MkDir(),
+		charm:        c.MkDir(),
+		base:         c.MkDir(),
+		socket:       osDependentSockPath(c),
+		metricsspool: c.MkDir(),
 	}
 }
 
@@ -78,36 +67,8 @@ func (p RealPaths) GetJujucServerSocket(remote bool) sockets.Socket {
 	return p.socket
 }
 
-func (p RealPaths) ComponentDir(name string) string {
-	if dirname, ok := p.componentDirs[name]; ok {
-		return dirname
-	}
-	p.componentDirs[name] = filepath.Join(p.fops.MkDir(), name)
-	return p.componentDirs[name]
-}
-
-type StorageContextAccessor struct {
-	CStorage map[names.StorageTag]*ContextStorage
-}
-
-func (s *StorageContextAccessor) StorageTags() ([]names.StorageTag, error) {
-	tags := names.NewSet()
-	for tag := range s.CStorage {
-		tags.Add(tag)
-	}
-	storageTags := make([]names.StorageTag, len(tags))
-	for i, tag := range tags.SortedValues() {
-		storageTags[i] = tag.(names.StorageTag)
-	}
-	return storageTags, nil
-}
-
-func (s *StorageContextAccessor) Storage(tag names.StorageTag) (jujuc.ContextStorageAttachment, error) {
-	storage, ok := s.CStorage[tag]
-	if !ok {
-		return nil, errors.NotFoundf("storage")
-	}
-	return storage, nil
+func (p RealPaths) GetResourcesDir() string {
+	return filepath.Join(p.base, "resources")
 }
 
 type ContextStorage struct {

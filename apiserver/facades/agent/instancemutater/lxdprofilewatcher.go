@@ -167,7 +167,7 @@ func (w *machineLXDProfileWatcher) loop() error {
 				}
 			}
 		case units := <-unitWatcher.Changes():
-			logger.Tracef("unit changes: %v", units)
+			logger.Debugf("unit changes on %v: %v", w.machine.Id(), units)
 			for _, unitName := range units {
 				u, err := w.backend.Unit(unitName)
 				unitLife := state.Dead
@@ -194,6 +194,30 @@ func (w *machineLXDProfileWatcher) loop() error {
 			}
 		}
 	}
+}
+
+func (w *machineLXDProfileWatcher) unitMachineID(u Unit) (string, error) {
+	principalName, isSubordinate := u.PrincipalName()
+	machineID, err := u.AssignedMachineId()
+	if err == nil || !errors.IsNotAssigned(err) {
+		return machineID, errors.Trace(err)
+	}
+	if !isSubordinate {
+		logger.Warningf("unit %s has no machine id, start watching when machine id assigned.", u.Name())
+		return machineID, errors.Trace(err)
+	}
+	principal, err := w.backend.Unit(principalName)
+	if errors.IsNotFound(err) {
+		logger.Warningf("unit %s is subordinate, principal %s not found", u.Name(), principalName)
+		return "", errors.NotFoundf("principal unit %q", principalName)
+	} else if err != nil {
+		return "", errors.Trace(err)
+	}
+	machineID, err = principal.AssignedMachineId()
+	if errors.IsNotAssigned(err) {
+		logger.Warningf("principal unit %s has no machine id, start watching when machine id assigned.", principalName)
+	}
+	return machineID, errors.Trace(err)
 }
 
 // init sets up the initial data used to determine when a notify occurs.
@@ -226,9 +250,13 @@ func (w *machineLXDProfileWatcher) init() error {
 			}
 		}
 
-		chURL := app.CharmURL()
+		cURL := app.CharmURL()
+		chURL, err := charm.ParseURL(*cURL)
+		if err != nil {
+			return err
+		}
 		info := appInfo{
-			charmURL: chURL.String(),
+			charmURL: *cURL,
 			units:    set.NewStrings(unitName),
 		}
 
@@ -271,19 +299,24 @@ func (w *machineLXDProfileWatcher) applicationCharmURLChange(appName string) err
 	} else if err != nil {
 		return errors.Trace(err)
 	}
-	chURL := app.CharmURL()
+
 	info, ok := w.applications[appName]
 	if ok {
+		cURL := app.CharmURL()
 		// Have we already seen this charm URL change?
-		if info.charmURL == chURL.String() {
+		if info.charmURL == *cURL {
 			return nil
+		}
+		chURL, err := charm.ParseURL(*cURL)
+		if err != nil {
+			return errors.Trace(err)
 		}
 		ch, err := w.backend.Charm(chURL)
 		if errors.IsNotFound(err) {
-			logger.Debugf("not watching %s with removed charm %s on machine-%s", appName, chURL, w.machine.Id())
+			logger.Debugf("not watching %s with removed charm %s on machine-%s", appName, *cURL, w.machine.Id())
 			return nil
 		} else if err != nil {
-			return errors.Annotatef(err, "error getting charm %s to evaluate for lxd profile notification", chURL)
+			return errors.Annotatef(err, "error getting charm %s to evaluate for lxd profile notification", *cURL)
 		}
 
 		// notify if:
@@ -298,7 +331,7 @@ func (w *machineLXDProfileWatcher) applicationCharmURLChange(appName string) err
 		}
 
 		info.charmProfile = lxdProfile
-		info.charmURL = chURL.String()
+		info.charmURL = *cURL
 		w.applications[appName] = info
 	} else {
 		logger.Tracef("not watching %s on machine-%s", appName, w.machine.Id())
@@ -386,42 +419,14 @@ func (w *machineLXDProfileWatcher) addUnit(unit Unit) error {
 	}(&notify)
 
 	unitName := unit.Name()
-	principalName, isSubordinate := unit.PrincipalName()
-	unitMachineId, err := unit.AssignedMachineId()
-	if errors.IsNotAssigned(err) {
-		logger.Warningf("unit %s has no machine id, start watching when machine id assigned.", unitName)
+	unitMachineId, err := w.unitMachineID(unit)
+	if errors.IsNotAssigned(err) || errors.IsNotFound(err) {
 		return nil
 	} else if err != nil {
-		return errors.Trace(err)
+		return errors.Annotatef(err, "finding assigned machine for unit %q", unitName)
 	}
-
-	switch {
-	case unitMachineId == "" && !isSubordinate:
-		logger.Warningf("%s has no machineId and not a sub", unitName)
-		return nil
-	case isSubordinate:
-		principal, err := w.backend.Unit(principalName)
-		if errors.IsNotFound(err) {
-			logger.Warningf("unit %s is subordinate, principal %s not found", unitName, principalName)
-			return nil
-		} else if err != nil {
-			return errors.Trace(err)
-		}
-		principalMachineId, err := principal.AssignedMachineId()
-		if errors.IsNotAssigned(err) {
-			logger.Warningf("principal unit %s has no machine id, start watching when machine id assigned.", principalName)
-			return nil
-		} else if err != nil {
-			return errors.Trace(err)
-		}
-		if err != nil {
-		}
-		if w.machine.Id() != principalMachineId {
-			logger.Debugf("watching subordinate unit changes on machine-%s not machine-%s", w.machine.Id(), principalMachineId)
-			return nil
-		}
-	case w.machine.Id() != unitMachineId:
-		logger.Debugf("watching unit changes on machine-%s not machine-%s", w.machine.Id(), unitMachineId)
+	if unitMachineId != w.machine.Id() {
+		logger.Debugf("ignoring unit change on machine-%s as it is not machine-%s", unitMachineId, w.machine.Id())
 		return nil
 	}
 	logger.Debugf("start watching %q on machine-%s", unitName, w.machine.Id())
@@ -440,8 +445,8 @@ func (w *machineLXDProfileWatcher) add(unit Unit) (bool, error) {
 
 	_, ok := w.applications[appName]
 	if !ok {
-		curl, ok := unit.CharmURL()
-		if !ok {
+		curlStr := unit.CharmURL()
+		if curlStr == nil {
 			// this happens for new units to existing machines.
 			app, err := unit.Application()
 			if errors.IsNotFound(err) {
@@ -450,17 +455,22 @@ func (w *machineLXDProfileWatcher) add(unit Unit) (bool, error) {
 			} else if err != nil {
 				return false, errors.Annotatef(err, "failed to get application %s for machine-%s", appName, w.machine.Id())
 			}
-			curl = app.CharmURL()
+			curlStr = app.CharmURL()
+		}
+
+		curl, err := charm.ParseURL(*curlStr)
+		if err != nil {
+			return false, errors.Annotatef(err, "application charm url")
 		}
 		ch, err := w.backend.Charm(curl)
 		if errors.IsNotFound(err) {
-			logger.Debugf("charm %s removed for %s on machine-%s", curl, unitName, w.machine.Id())
+			logger.Debugf("charm %s removed for %s on machine-%s", *curlStr, unitName, w.machine.Id())
 			return false, nil
 		} else if err != nil {
-			return false, errors.Annotatef(err, "failed to get charm %q for %s on machine-%s", curl, appName, w.machine.Id())
+			return false, errors.Annotatef(err, "failed to get charm %q for %s on machine-%s", *curlStr, appName, w.machine.Id())
 		}
 		info := appInfo{
-			charmURL: curl.String(),
+			charmURL: *curlStr,
 			units:    set.NewStrings(unitName),
 		}
 

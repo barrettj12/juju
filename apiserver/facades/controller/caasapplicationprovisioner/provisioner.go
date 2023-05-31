@@ -31,11 +31,11 @@ import (
 	"github.com/juju/juju/controller"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/resources"
+	"github.com/juju/juju/core/series"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/environs/tags"
 	"github.com/juju/juju/resource"
-	"github.com/juju/juju/resource/resourceadapters"
 	"github.com/juju/juju/rpc/params"
 	"github.com/juju/juju/state"
 	stateerrors "github.com/juju/juju/state/errors"
@@ -57,7 +57,7 @@ type APIGroup struct {
 	*API
 }
 
-type NewResourceOpenerFunc func(appName string) (resource.Opener, error)
+type NewResourceOpenerFunc func(appName string) (resources.Opener, error)
 
 type API struct {
 	auth      facade.Authorizer
@@ -75,7 +75,6 @@ type API struct {
 // NewStateCAASApplicationProvisionerAPI provides the signature required for facade registration.
 func NewStateCAASApplicationProvisionerAPI(ctx facade.Context) (*APIGroup, error) {
 	authorizer := ctx.Auth()
-	resources := ctx.Resources()
 
 	st := ctx.State()
 	sb, err := state.NewStorageBackend(ctx.State())
@@ -104,14 +103,18 @@ func NewStateCAASApplicationProvisionerAPI(ctx facade.Context) (*APIGroup, error
 		return nil, errors.Trace(err)
 	}
 
-	newResourceOpener := func(appName string) (resource.Opener, error) {
-		return resourceadapters.NewResourceOpenerForApplication(resourceadapters.NewResourceOpenerState(st), appName)
+	newResourceOpener := func(appName string) (resources.Opener, error) {
+		return resource.NewResourceOpenerForApplication(st, appName)
 	}
 
+	systemState, err := ctx.StatePool().SystemState()
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
 	api, err := NewCAASApplicationProvisionerAPI(
-		stateShim{ctx.StatePool().SystemState()},
+		stateShim{systemState},
 		stateShim{st},
-		resources,
+		ctx.Resources(),
 		newResourceOpener,
 		authorizer,
 		sb,
@@ -135,7 +138,7 @@ func NewStateCAASApplicationProvisionerAPI(ctx facade.Context) (*APIGroup, error
 	apiGroup := &APIGroup{
 		PasswordChanger:    common.NewPasswordChanger(st, common.AuthFuncForTagKind(names.ApplicationTagKind)),
 		LifeGetter:         common.NewLifeGetter(st, lifeCanRead),
-		AgentEntityWatcher: common.NewAgentEntityWatcher(st, resources, common.AuthFuncForTagKind(names.ApplicationTagKind)),
+		AgentEntityWatcher: common.NewAgentEntityWatcher(st, ctx.Resources(), common.AuthFuncForTagKind(names.ApplicationTagKind)),
 		Remover:            common.NewRemover(st, common.RevokeLeadershipFunc(leadershipRevoker), true, common.AuthFuncForTagKind(names.UnitTagKind)),
 		charmInfoAPI:       commonCharmsAPI,
 		appCharmInfoAPI:    appCharmInfoAPI,
@@ -196,6 +199,57 @@ func (a *API) WatchApplications() (params.StringsWatchResult, error) {
 		}, nil
 	}
 	return params.StringsWatchResult{}, watcher.EnsureErr(watch)
+}
+
+// WatchProvisioningInfo provides a watcher for changes that affect the
+// information returned by ProvisioningInfo. This is useful for ensuring the
+// latest application stated is ensured.
+func (a *API) WatchProvisioningInfo(args params.Entities) (params.NotifyWatchResults, error) {
+	var result params.NotifyWatchResults
+	result.Results = make([]params.NotifyWatchResult, len(args.Entities))
+	for i, entity := range args.Entities {
+		appName, err := names.ParseApplicationTag(entity.Tag)
+		if err != nil {
+			result.Results[i].Error = apiservererrors.ServerError(err)
+			continue
+		}
+
+		res, err := a.watchProvisioningInfo(appName)
+		if err != nil {
+			result.Results[i].Error = apiservererrors.ServerError(err)
+			continue
+		}
+
+		result.Results[i].NotifyWatcherId = res.NotifyWatcherId
+	}
+	return result, nil
+}
+
+func (a *API) watchProvisioningInfo(appName names.ApplicationTag) (params.NotifyWatchResult, error) {
+	result := params.NotifyWatchResult{}
+	app, err := a.state.Application(appName.Id())
+	if err != nil {
+		return result, errors.Trace(err)
+	}
+
+	model, err := a.state.Model()
+	if err != nil {
+		return result, errors.Trace(err)
+	}
+
+	modelConfigWatcher := model.WatchForModelConfigChanges()
+	appWatcher := app.Watch()
+	controllerConfigWatcher := a.ctrlSt.WatchControllerConfig()
+
+	multiWatcher := common.NewMultiNotifyWatcher(appWatcher, controllerConfigWatcher, modelConfigWatcher)
+
+	if _, ok := <-multiWatcher.Changes(); ok {
+		result.NotifyWatcherId = a.resources.Register(multiWatcher)
+	} else {
+		return result, watcher.EnsureErr(multiWatcher)
+	}
+
+	return result, nil
 }
 
 // ProvisioningInfo returns the info needed to provision a caas application.
@@ -286,9 +340,20 @@ func (a *API) provisioningInfo(appName names.ApplicationTag) (*params.CAASApplic
 	}
 	caCert, _ := cfg.CACert()
 	charmURL, _ := app.CharmURL()
+	if charmURL == nil {
+		return nil, errors.NotValidf("application charm url nil")
+	}
 	appConfig, err := app.ApplicationConfig()
 	if err != nil {
 		return nil, errors.Annotatef(err, "getting application config")
+	}
+	var base series.Base
+	appSeries := app.Series()
+	if appSeries != "" {
+		base, err = series.GetBaseFromSeries(appSeries)
+		if err != nil {
+			return nil, errors.Annotatef(err, "converting app series %q to base", appSeries)
+		}
 	}
 	return &params.CAASApplicationProvisioningInfo{
 		Version:              vers,
@@ -298,10 +363,10 @@ func (a *API) provisioningInfo(appName names.ApplicationTag) (*params.CAASApplic
 		Filesystems:          filesystemParams,
 		Devices:              devices,
 		Constraints:          mergedCons,
-		Series:               app.Series(),
+		Base:                 params.Base{Name: base.Name, Channel: base.Channel.String()},
 		ImageRepo:            params.NewDockerImageInfo(cfg.CAASImageRepo(), imagePath),
 		CharmModifiedVersion: app.CharmModifiedVersion(),
-		CharmURL:             charmURL.String(),
+		CharmURL:             *charmURL,
 		Trust:                appConfig.GetBool(application.TrustConfigOptionName, false),
 		Scale:                app.GetScale(),
 	}, nil
@@ -386,143 +451,6 @@ func statusInfoToDetailedStatus(in status.StatusInfo) params.DetailedStatus {
 		Since:  in.Since,
 		Data:   in.Data,
 	}
-}
-
-// CAASApplicationGarbageCollect cleans up units that have gone away permanently.
-// Only observed units will be deleted as new units could have surfaced between
-// the capturing of kuberentes pod state/application state and this call.
-func (a *API) CAASApplicationGarbageCollect(args params.CAASApplicationGarbageCollectArgs) (params.ErrorResults, error) {
-	result := params.ErrorResults{
-		Results: make([]params.ErrorResult, len(args.Args)),
-	}
-	for i, arg := range args.Args {
-		err := a.garbageCollectOneApplication(arg)
-		if err != nil {
-			result.Results[i].Error = apiservererrors.ServerError(err)
-			continue
-		}
-	}
-	return result, nil
-}
-
-func (a *API) garbageCollectOneApplication(args params.CAASApplicationGarbageCollectArg) error {
-	appName, err := names.ParseApplicationTag(args.Application.Tag)
-	if err != nil {
-		return errors.Trace(err)
-	}
-	observedUnitTags := set.NewStrings()
-	for _, v := range args.ObservedUnits.Entities {
-		tag, err := names.ParseUnitTag(v.Tag)
-		if err != nil {
-			return errors.Trace(err)
-		}
-		observedUnitTags.Add(tag.String())
-	}
-	app, err := a.state.Application(appName.Id())
-	if err != nil {
-		return errors.Trace(err)
-	}
-
-	// TODO(sidecar): support more than statefulset
-	deploymentType := caas.DeploymentStateful
-
-	model, err := a.state.Model()
-	if err != nil {
-		return errors.Trace(err)
-	}
-	containers, err := model.Containers(args.ActivePodNames...)
-	if err != nil {
-		return errors.Trace(err)
-	}
-	foundUnits := set.NewStrings()
-	for _, v := range containers {
-		foundUnits.Add(names.NewUnitTag(v.Unit()).String())
-	}
-
-	units, err := app.AllUnits()
-	if err != nil {
-		return errors.Trace(err)
-	}
-
-	filesystemStatus := make(map[string]status.StatusInfo)
-	op := state.UpdateUnitsOperation{}
-	for _, unit := range units {
-		tag := unit.Tag()
-		if !args.Force {
-			if !observedUnitTags.Contains(tag.String()) {
-				// Was not known yet when pulling kubernetes state.
-				logger.Debugf("skipping unit %q because it was not known to the worker", tag.String())
-				continue
-			}
-			if foundUnits.Contains(tag.String()) {
-				// Not ready to be deleted.
-				logger.Debugf("skipping unit %q because the pod still exists", tag.String())
-				continue
-			}
-			switch deploymentType {
-			case caas.DeploymentStateful:
-				ordinal := tag.(names.UnitTag).Number()
-				if ordinal < args.DesiredReplicas {
-					// Don't delete units that will reappear.
-					logger.Debugf("skipping unit %q because its still needed", tag.String())
-					continue
-				}
-			case caas.DeploymentStateless, caas.DeploymentDaemon:
-				ci, err := unit.ContainerInfo()
-				if errors.IsNotFound(err) {
-					logger.Debugf("skipping unit %q because it hasn't been assigned a pod", tag.String())
-					continue
-				} else if err != nil {
-					return errors.Trace(err)
-				}
-				if ci.ProviderId() == "" {
-					logger.Debugf("skipping unit %q because it hasn't been assigned a pod", tag.String())
-					continue
-				}
-			default:
-				return errors.Errorf("unknown deployment type %q", deploymentType)
-			}
-		}
-
-		logger.Debugf("deleting unit %q", tag.String())
-
-		// If a unit is removed from the cloud, all filesystems are considered detached.
-		unitStorage, err := a.storage.UnitStorageAttachments(tag.(names.UnitTag))
-		if err != nil {
-			return errors.Trace(err)
-		}
-		for _, sa := range unitStorage {
-			fs, err := a.storage.StorageInstanceFilesystem(sa.StorageInstance())
-			if err != nil {
-				return errors.Trace(err)
-			}
-			filesystemStatus[fs.FilesystemTag().String()] = status.StatusInfo{Status: status.Detached}
-		}
-		cloudContainerStatus := &status.StatusInfo{
-			Status:  status.Terminated,
-			Message: "unit stopped by the cloud",
-		}
-		agentStatus := &status.StatusInfo{
-			Status: status.Idle,
-		}
-		updateProps := state.UnitUpdateProperties{
-			CloudContainerStatus: cloudContainerStatus,
-			AgentStatus:          agentStatus,
-		}
-		op.Updates = append(op.Updates, unit.UpdateOperation(updateProps))
-		destroyOp := unit.DestroyOperation()
-		destroyOp.Force = args.Force
-		op.Deletes = append(op.Deletes, destroyOp)
-	}
-	if len(op.Deletes) == 0 {
-		return nil
-	}
-
-	if err := a.updateFilesystemInfo(nil, filesystemStatus); err != nil {
-		return errors.Annotatef(err, "updating filesystem information for %v", appName)
-	}
-
-	return app.UpdateUnits(&op)
 }
 
 // CharmStorageParams returns filesystem parameters needed
@@ -808,7 +736,7 @@ func (a *API) UpdateApplicationsUnits(args params.UpdateApplicationUnitArgs) (pa
 		appStatus := appUpdate.Status
 		if appStatus.Status != "" && appStatus.Status != status.Unknown {
 			now := a.clock.Now()
-			err = app.SetStatus(status.StatusInfo{
+			err = app.SetOperatorStatus(status.StatusInfo{
 				Status:  appStatus.Status,
 				Message: appStatus.Info,
 				Data:    appStatus.Data,
@@ -1358,4 +1286,111 @@ func (a *API) watchUnits(tagString string) (string, []string, error) {
 		return a.resources.Register(w), changes, nil
 	}
 	return "", nil, watcher.EnsureErr(w)
+}
+
+// DestroyUnits is responsible for scaling down a set of units on the this
+// Application.
+func (a *API) DestroyUnits(args params.DestroyUnitsParams) (params.DestroyUnitResults, error) {
+	results := make([]params.DestroyUnitResult, 0, len(args.Units))
+
+	for _, unit := range args.Units {
+		res, err := a.destroyUnit(unit)
+		if err != nil {
+			res = params.DestroyUnitResult{
+				Error: apiservererrors.ServerError(err),
+			}
+		}
+		results = append(results, res)
+	}
+
+	return params.DestroyUnitResults{
+		Results: results,
+	}, nil
+}
+
+func (a *API) destroyUnit(args params.DestroyUnitParams) (params.DestroyUnitResult, error) {
+	unitTag, err := names.ParseUnitTag(args.UnitTag)
+	if err != nil {
+		return params.DestroyUnitResult{}, fmt.Errorf("parsing unit tag: %w", err)
+	}
+
+	unit, err := a.state.Unit(unitTag.Id())
+	if errors.Is(err, errors.NotFound) {
+		return params.DestroyUnitResult{}, nil
+	} else if err != nil {
+		return params.DestroyUnitResult{}, fmt.Errorf("fetching unit %q state: %w", unitTag, err)
+	}
+
+	op := unit.DestroyOperation()
+	op.DestroyStorage = args.DestroyStorage
+	op.Force = args.Force
+	if args.MaxWait != nil {
+		op.MaxWait = *args.MaxWait
+	}
+
+	if err := a.state.ApplyOperation(op); err != nil {
+		return params.DestroyUnitResult{}, fmt.Errorf("destroying unit %q: %w", unitTag, err)
+	}
+
+	return params.DestroyUnitResult{}, nil
+}
+
+// ProvisioningState returns the provisioning state for the application.
+func (a *API) ProvisioningState(args params.Entity) (params.CAASApplicationProvisioningStateResult, error) {
+	result := params.CAASApplicationProvisioningStateResult{}
+
+	appTag, err := names.ParseApplicationTag(args.Tag)
+	if err != nil {
+		result.Error = apiservererrors.ServerError(err)
+		return result, nil
+	}
+
+	app, err := a.state.Application(appTag.Id())
+	if err != nil {
+		result.Error = apiservererrors.ServerError(err)
+		return result, nil
+	}
+
+	ps := app.ProvisioningState()
+	if ps == nil {
+		return result, nil
+	}
+
+	result.ProvisioningState = &params.CAASApplicationProvisioningState{
+		Scaling:     ps.Scaling,
+		ScaleTarget: ps.ScaleTarget,
+	}
+	return result, nil
+}
+
+// SetProvisioningState sets the provisioning state for the application.
+func (a *API) SetProvisioningState(args params.CAASApplicationProvisioningStateArg) (params.ErrorResult, error) {
+	result := params.ErrorResult{}
+
+	appTag, err := names.ParseApplicationTag(args.Application.Tag)
+	if err != nil {
+		result.Error = apiservererrors.ServerError(err)
+		return result, nil
+	}
+
+	app, err := a.state.Application(appTag.Id())
+	if err != nil {
+		result.Error = apiservererrors.ServerError(err)
+		return result, nil
+	}
+
+	ps := state.ApplicationProvisioningState{
+		Scaling:     args.ProvisioningState.Scaling,
+		ScaleTarget: args.ProvisioningState.ScaleTarget,
+	}
+	err = app.SetProvisioningState(ps)
+	if errors.Is(err, stateerrors.ProvisioningStateInconsistent) {
+		result.Error = apiservererrors.ServerError(apiservererrors.ErrTryAgain)
+		return result, nil
+	} else if err != nil {
+		result.Error = apiservererrors.ServerError(err)
+		return result, nil
+	}
+
+	return result, nil
 }

@@ -7,6 +7,7 @@ package manual
 import (
 	"errors"
 	"io"
+	"time"
 
 	"github.com/juju/utils/v3/winrm"
 
@@ -49,6 +50,11 @@ type ProvisionMachineArgs struct {
 	// ubuntu user's ~/.ssh/authorized_keys.
 	AuthorizedKeys string
 
+	// PrivateKey contains the path of the identify file containing the
+	// private key to be used during the ssh connection with a target
+	// machine.
+	PrivateKey string
+
 	// WinRM contains keys and client interface api with the remote windows machine
 	WinRM WinRMArgs
 
@@ -76,7 +82,8 @@ type WinrmClientAPI interface {
 // provisioning of machines.  An interface is used here to decouple the API
 // consumer from the actual API implementation type.
 type ProvisioningClientAPI interface {
+	BestAPIVersion() int
 	AddMachines([]params.AddMachineParams) ([]params.AddMachinesResult, error)
-	ForceDestroyMachines(machines ...string) error
+	DestroyMachinesWithParams(force, keep bool, maxWait *time.Duration, machines ...string) ([]params.DestroyMachineResult, error)
 	ProvisioningScript(params.ProvisioningScriptParams) (script string, err error)
 }

@@ -40,9 +40,9 @@ type Backend interface {
 	AddRemoteApplication(state.AddRemoteApplicationParams) (RemoteApplication, error)
 	AddRelation(...state.Endpoint) (Relation, error)
 	Charm(*charm.URL) (Charm, error)
-	EndpointsRelation(...state.Endpoint) (Relation, error)
 	Relation(int) (Relation, error)
 	InferEndpoints(...string) ([]state.Endpoint, error)
+	InferActiveRelation(...string) (Relation, error)
 	Machine(string) (Machine, error)
 	Model() (Model, error)
 	Unit(string) (Unit, error)
@@ -50,7 +50,7 @@ type Backend interface {
 	SaveController(info crossmodel.ControllerInfo, modelUUID string) (ExternalController, error)
 	ControllerTag() names.ControllerTag
 	ControllerConfig() (controller.Config, error)
-	Resources() (Resources, error)
+	Resources() Resources
 	OfferConnectionForRelation(string) (OfferConnection, error)
 	SaveEgressNetworks(relationKey string, cidrs []string) (state.RelationNetworks, error)
 	Branch(string) (Generation, error)
@@ -76,7 +76,7 @@ type Application interface {
 	ApplicationConfig() (coreconfig.ConfigAttributes, error)
 	ApplicationTag() names.ApplicationTag
 	Charm() (Charm, bool, error)
-	CharmURL() (*charm.URL, bool)
+	CharmURL() (*string, bool)
 	Channel() csparams.Channel
 	CharmOrigin() *state.CharmOrigin
 	ClearExposed() error
@@ -122,13 +122,11 @@ type Bindings interface {
 // details on the methods, see the methods on state.Charm with
 // the same names.
 type Charm interface {
-	charm.Charm
+	Config() *charm.Config
+	Manifest() *charm.Manifest
+	Meta() *charm.Meta
 	URL() *charm.URL
 	String() string
-}
-
-type CharmMeta interface {
-	ComputedSeries() []string
 }
 
 // Machine defines a subset of the functionality provided by the
@@ -241,13 +239,13 @@ func (s stateShim) SaveController(controllerInfo crossmodel.ControllerInfo, mode
 	return api.Save(controllerInfo, modelUUID)
 }
 
-type storageInterface interface {
+type StorageInterface interface {
 	storagecommon.StorageAccess
 	VolumeAccess() storagecommon.VolumeAccess
 	FilesystemAccess() storagecommon.FilesystemAccess
 }
 
-var getStorageState = func(st *state.State) (storageInterface, error) {
+var getStorageState = func(st *state.State) (StorageInterface, error) {
 	m, err := st.Model()
 	if err != nil {
 		return nil, err
@@ -359,14 +357,6 @@ func (s stateShim) Charm(curl *charm.URL) (Charm, error) {
 	return stateCharmShim{ch}, nil
 }
 
-func (s stateShim) EndpointsRelation(eps ...state.Endpoint) (Relation, error) {
-	r, err := s.State.EndpointsRelation(eps...)
-	if err != nil {
-		return nil, err
-	}
-	return stateRelationShim{r, s.State}, nil
-}
-
 func (s stateShim) Model() (Model, error) {
 	m, err := s.State.Model()
 	if err != nil {
@@ -377,6 +367,14 @@ func (s stateShim) Model() (Model, error) {
 
 func (s stateShim) Relation(id int) (Relation, error) {
 	r, err := s.State.Relation(id)
+	if err != nil {
+		return nil, err
+	}
+	return stateRelationShim{r, s.State}, nil
+}
+
+func (s stateShim) InferActiveRelation(names ...string) (Relation, error) {
+	r, err := s.State.InferActiveRelation(names...)
 	if err != nil {
 		return nil, err
 	}
@@ -411,7 +409,7 @@ func (s stateShim) UnitsInError() ([]Unit, error) {
 	return result, nil
 }
 
-func (s stateShim) Resources() (Resources, error) {
+func (s stateShim) Resources() Resources {
 	return s.State.Resources()
 }
 

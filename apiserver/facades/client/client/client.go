@@ -19,6 +19,7 @@ import (
 	apiservererrors "github.com/juju/juju/apiserver/errors"
 	"github.com/juju/juju/apiserver/facade"
 	"github.com/juju/juju/apiserver/facades/client/application"
+	"github.com/juju/juju/apiserver/facades/client/machinemanager"
 	"github.com/juju/juju/apiserver/facades/client/modelconfig"
 	"github.com/juju/juju/cloudconfig/podcfg"
 	"github.com/juju/juju/core/cache"
@@ -44,7 +45,7 @@ import (
 	"github.com/juju/juju/state"
 	"github.com/juju/juju/state/stateenvirons"
 	"github.com/juju/juju/tools"
-	"github.com/juju/juju/upgrades"
+	"github.com/juju/juju/upgrades/upgradevalidation"
 	jujuversion "github.com/juju/juju/version"
 )
 
@@ -74,8 +75,7 @@ func (api *API) state() *state.State {
 
 // Client serves client-specific API methods.
 type Client struct {
-	// TODO(wallyworld) - we'll retain model config facade methods
-	// on the client facade until GUI and Python client library are updated.
+	// TODO(juju3) - remove
 	*modelconfig.ModelConfigAPIV1
 
 	api             *API
@@ -103,6 +103,11 @@ type ClientV3 struct {
 
 // ClientV4 serves the (v4) client-specific API methods.
 type ClientV4 struct {
+	*ClientV5
+}
+
+// ClientV5 serves the (v5) client-specific API methods.
+type ClientV5 struct {
 	*Client
 }
 
@@ -173,7 +178,11 @@ func NewFacade(ctx facade.Context) (*Client, error) {
 
 	modelUUID := model.UUID()
 
-	urlGetter := common.NewToolsURLGetter(modelUUID, ctx.StatePool().SystemState())
+	systemState, err := ctx.StatePool().SystemState()
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	urlGetter := common.NewToolsURLGetter(modelUUID, systemState)
 	toolsFinder := common.NewToolsFinder(configGetter, st, urlGetter, newEnviron)
 	blockChecker := common.NewBlockChecker(st)
 	backend := modelconfig.NewStateBackend(model)
@@ -196,7 +205,9 @@ func NewFacade(ctx facade.Context) (*Client, error) {
 	return NewClient(
 		&stateShim{st, model, nil},
 		&poolShim{ctx.StatePool()},
-		&modelconfig.ModelConfigAPIV1{modelConfigAPI},
+		&modelconfig.ModelConfigAPIV1{
+			&modelconfig.ModelConfigAPIV2{modelConfigAPI},
+		},
 		resources,
 		authorizer,
 		presence,
@@ -316,6 +327,7 @@ func (c *Client) Resolved(p params.Resolved) error {
 }
 
 // PublicAddress implements the server side of Client.PublicAddress.
+// TODO(juju3) - remove as this is unused
 func (c *Client) PublicAddress(p params.PublicAddress) (results params.PublicAddressResults, err error) {
 	if err := c.checkCanRead(); err != nil {
 		return params.PublicAddressResults{}, err
@@ -348,6 +360,7 @@ func (c *Client) PublicAddress(p params.PublicAddress) (results params.PublicAdd
 }
 
 // PrivateAddress implements the server side of Client.PrivateAddress.
+// TODO(juju3) - remove as this is unused
 func (c *Client) PrivateAddress(p params.PrivateAddress) (results params.PrivateAddressResults, err error) {
 	if err := c.checkCanRead(); err != nil {
 		return params.PrivateAddressResults{}, err
@@ -381,6 +394,7 @@ func (c *Client) PrivateAddress(p params.PrivateAddress) (results params.Private
 }
 
 // GetModelConstraints returns the constraints for the model.
+// TODO(juju3) - remove
 func (c *Client) GetModelConstraints() (params.GetConstraintsResults, error) {
 	if err := c.checkCanRead(); err != nil {
 		return params.GetConstraintsResults{}, err
@@ -394,6 +408,7 @@ func (c *Client) GetModelConstraints() (params.GetConstraintsResults, error) {
 }
 
 // SetModelConstraints sets the constraints for the model.
+// TODO(juju3) - remove
 func (c *Client) SetModelConstraints(args params.SetConstraints) error {
 	if err := c.checkCanWrite(); err != nil {
 		return err
@@ -406,11 +421,13 @@ func (c *Client) SetModelConstraints(args params.SetConstraints) error {
 }
 
 // AddMachines adds new machines with the supplied parameters.
+// TODO(juju3) - remove
 func (c *Client) AddMachines(args params.AddMachines) (params.AddMachinesResults, error) {
 	return c.AddMachinesV2(args)
 }
 
 // AddMachinesV2 adds new machines with the supplied parameters.
+// TODO(juju3) - remove
 func (c *Client) AddMachinesV2(args params.AddMachines) (params.AddMachinesResults, error) {
 	results := params.AddMachinesResults{
 		Machines: make([]params.AddMachinesResult, len(args.MachineParams)),
@@ -432,6 +449,7 @@ func (c *Client) AddMachinesV2(args params.AddMachines) (params.AddMachinesResul
 }
 
 // InjectMachines injects a machine into state with provisioned status.
+// TODO(juju3) - remove
 func (c *Client) InjectMachines(args params.AddMachines) (params.AddMachinesResults, error) {
 	return c.AddMachines(args)
 }
@@ -516,13 +534,18 @@ func (c *Client) addOneMachine(p params.AddMachineParams) (*state.Machine, error
 
 // ProvisioningScript returns a shell script that, when run,
 // provisions a machine agent on the machine executing the script.
+// TODO(juju3) - remove
 func (c *Client) ProvisioningScript(args params.ProvisioningScriptParams) (params.ProvisioningScriptResult, error) {
 	if err := c.checkCanWrite(); err != nil {
 		return params.ProvisioningScriptResult{}, err
 	}
 
 	var result params.ProvisioningScriptResult
-	icfg, err := InstanceConfig(c.api.pool.SystemState(), c.api.state(), args.MachineId, args.Nonce, args.DataDir)
+	st, err := c.api.pool.SystemState()
+	if err != nil {
+		return result, errors.Trace(err)
+	}
+	icfg, err := machinemanager.InstanceConfig(st, machinemanager.StateBackend(c.api.state()), args.MachineId, args.Nonce, args.DataDir)
 	if err != nil {
 		return result, apiservererrors.ServerError(errors.Annotate(
 			err, "getting instance config",
@@ -568,6 +591,7 @@ func (c *Client) ProvisioningScript(args params.ProvisioningScriptParams) (param
 }
 
 // DestroyMachines removes a given set of machines.
+// TODO(juju3) - remove
 func (c *Client) DestroyMachines(args params.DestroyMachines) error {
 	if err := c.checkCanWrite(); err != nil {
 		return err
@@ -581,6 +605,7 @@ func (c *Client) DestroyMachines(args params.DestroyMachines) error {
 }
 
 // ModelInfo returns information about the current model.
+// TODO(juju3) - remove
 func (c *Client) ModelInfo() (params.ModelInfo, error) {
 	if err := c.checkCanRead(); err != nil {
 		return params.ModelInfo{}, err
@@ -630,6 +655,7 @@ func modelInfo(st *state.State, user permission.UserAccess) (params.ModelUserInf
 }
 
 // ModelUserInfo returns information on all users in the model.
+// TODO(juju3) - remove
 func (c *Client) ModelUserInfo() (params.ModelUserInfoResults, error) {
 	var results params.ModelUserInfoResults
 	if err := c.checkCanRead(); err != nil {
@@ -659,6 +685,7 @@ func (c *Client) ModelUserInfo() (params.ModelUserInfoResults, error) {
 }
 
 // AgentVersion returns the current version that the API server is running.
+// TODO(juju3) - remove
 func (c *Client) AgentVersion() (params.AgentVersionResult, error) {
 	if err := c.checkCanRead(); err != nil {
 		return params.AgentVersionResult{}, err
@@ -669,6 +696,7 @@ func (c *Client) AgentVersion() (params.AgentVersionResult, error) {
 
 // SetModelAgentVersion sets the model agent version.
 func (c *Client) SetModelAgentVersion(args params.SetModelAgentVersion) error {
+	// TODO: remove in juju3.
 	if err := c.checkCanWrite(); err != nil {
 		return err
 	}
@@ -712,7 +740,7 @@ func (c *Client) SetModelAgentVersion(args params.SetModelAgentVersion) error {
 			if err != nil {
 				return errors.Trace(err)
 			}
-			allowed, minVer, err := upgrades.UpgradeAllowed(vers, args.Version)
+			allowed, minVer, err := upgradevalidation.UpgradeToAllowed(vers, args.Version)
 			if err != nil {
 				return errors.Trace(err)
 			}
@@ -772,6 +800,7 @@ func (c *Client) CheckMongoStatusForUpgrade(session MongoSession) error {
 // AbortCurrentUpgrade aborts and archives the current upgrade
 // synchronisation record, if any.
 func (c *Client) AbortCurrentUpgrade() error {
+	// TODO: remove in juju3.
 	if err := c.checkCanWrite(); err != nil {
 		return err
 	}
@@ -897,7 +926,7 @@ func (c *Client) toolVersionsForCAAS(args params.FindToolsParams, streamsVersion
 // NOTE: AddCharm is deprecated as of juju 2.9 and charms facade version 3.
 // Please discontinue use and move to the charms facade version.
 //
-// TODO: remove in juju 3.0
+// TODO(juju3) - remove
 func (c *Client) AddCharm(args params.AddCharm) error {
 	if err := c.checkCanWrite(); err != nil {
 		return err
@@ -922,7 +951,7 @@ func (c *Client) AddCharm(args params.AddCharm) error {
 // facade version 3. Please discontinue use and move to the charms facade
 // version.
 //
-// TODO: remove in juju 3.0
+// TODO(juju3) - remove
 func (c *Client) AddCharmWithAuthorization(args params.AddCharmWithAuthorization) error {
 	if err := c.checkCanWrite(); err != nil {
 		return err
@@ -938,7 +967,7 @@ func (c *Client) AddCharmWithAuthorization(args params.AddCharmWithAuthorization
 // NOTE: ResolveCharms is deprecated as of juju 2.9 and charms facade version 3.
 // Please discontinue use and move to the charms facade version.
 //
-// TODO: remove in juju 3.0
+// TODO(juju3) - remove
 func (c *Client) ResolveCharms(args params.ResolveCharms) (params.ResolveCharmResults, error) {
 	if err := c.checkCanWrite(); err != nil {
 		return params.ResolveCharmResults{}, err
@@ -949,6 +978,7 @@ func (c *Client) ResolveCharms(args params.ResolveCharms) (params.ResolveCharmRe
 }
 
 // RetryProvisioning marks a provisioning error as transient on the machines.
+// TODO(juju3) - remove
 func (c *Client) RetryProvisioning(p params.Entities) (params.ErrorResults, error) {
 	if err := c.checkCanWrite(); err != nil {
 		return params.ErrorResults{}, err
@@ -1014,12 +1044,16 @@ func (c *Client) updateInstanceStatus(tag names.Tag, data map[string]interface{}
 }
 
 // APIHostPorts returns the API host/port addresses stored in state.
+// TODO(juju3) - remove
 func (c *Client) APIHostPorts() (result params.APIHostPortsResult, err error) {
 	if err := c.checkCanWrite(); err != nil {
 		return result, err
 	}
 
-	ctrlSt := c.api.pool.SystemState()
+	ctrlSt, err := c.api.pool.SystemState()
+	if err != nil {
+		return result, err
+	}
 	servers, err := ctrlSt.APIHostPortsForClients()
 	if err != nil {
 		return result, err

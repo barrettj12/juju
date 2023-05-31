@@ -63,7 +63,7 @@ When invoked without arguments, add-cloud begins an interactive session
 designed for working with private clouds.  The session will enable you 
 to instruct Juju how to connect to your private cloud.
 
-A cloud definition can be provided in a file either as an option --f or as a 
+A cloud definition can be provided in a file either as an option -f or as a 
 positional argument:
 
     juju add-cloud mycloud ~/mycloud.yaml
@@ -100,7 +100,6 @@ clouds:                           # mandatory
 
 <cloud types> for public clouds:
  - azure
- - cloudsigma
  - ec2
  - gce
  - oci

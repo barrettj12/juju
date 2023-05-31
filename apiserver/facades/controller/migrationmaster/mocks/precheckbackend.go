@@ -9,9 +9,9 @@ import (
 
 	gomock "github.com/golang/mock/gomock"
 	migration "github.com/juju/juju/migration"
-	resource "github.com/juju/juju/resource"
 	state "github.com/juju/juju/state"
 	names "github.com/juju/names/v4"
+	replicaset "github.com/juju/replicaset/v2"
 	version "github.com/juju/version/v2"
 )
 
@@ -143,6 +143,21 @@ func (mr *MockPrecheckBackendMockRecorder) ControllerBackend() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ControllerBackend", reflect.TypeOf((*MockPrecheckBackend)(nil).ControllerBackend))
 }
 
+// HasUpgradeSeriesLocks mocks base method.
+func (m *MockPrecheckBackend) HasUpgradeSeriesLocks() (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "HasUpgradeSeriesLocks")
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// HasUpgradeSeriesLocks indicates an expected call of HasUpgradeSeriesLocks.
+func (mr *MockPrecheckBackendMockRecorder) HasUpgradeSeriesLocks() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "HasUpgradeSeriesLocks", reflect.TypeOf((*MockPrecheckBackend)(nil).HasUpgradeSeriesLocks))
+}
+
 // IsMigrationActive mocks base method.
 func (m *MockPrecheckBackend) IsMigrationActive(arg0 string) (bool, error) {
 	m.ctrl.T.Helper()
@@ -173,19 +188,23 @@ func (mr *MockPrecheckBackendMockRecorder) IsUpgrading() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsUpgrading", reflect.TypeOf((*MockPrecheckBackend)(nil).IsUpgrading))
 }
 
-// ListPendingResources mocks base method.
-func (m *MockPrecheckBackend) ListPendingResources(arg0 string) ([]resource.Resource, error) {
+// MachineCountForSeries mocks base method.
+func (m *MockPrecheckBackend) MachineCountForSeries(arg0 ...string) (map[string]int, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ListPendingResources", arg0)
-	ret0, _ := ret[0].([]resource.Resource)
+	varargs := []interface{}{}
+	for _, a := range arg0 {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "MachineCountForSeries", varargs...)
+	ret0, _ := ret[0].(map[string]int)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// ListPendingResources indicates an expected call of ListPendingResources.
-func (mr *MockPrecheckBackendMockRecorder) ListPendingResources(arg0 interface{}) *gomock.Call {
+// MachineCountForSeries indicates an expected call of MachineCountForSeries.
+func (mr *MockPrecheckBackendMockRecorder) MachineCountForSeries(arg0 ...interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListPendingResources", reflect.TypeOf((*MockPrecheckBackend)(nil).ListPendingResources), arg0)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MachineCountForSeries", reflect.TypeOf((*MockPrecheckBackend)(nil).MachineCountForSeries), arg0...)
 }
 
 // Model mocks base method.
@@ -201,6 +220,21 @@ func (m *MockPrecheckBackend) Model() (migration.PrecheckModel, error) {
 func (mr *MockPrecheckBackendMockRecorder) Model() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Model", reflect.TypeOf((*MockPrecheckBackend)(nil).Model))
+}
+
+// MongoCurrentStatus mocks base method.
+func (m *MockPrecheckBackend) MongoCurrentStatus() (*replicaset.Status, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MongoCurrentStatus")
+	ret0, _ := ret[0].(*replicaset.Status)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// MongoCurrentStatus indicates an expected call of MongoCurrentStatus.
+func (mr *MockPrecheckBackendMockRecorder) MongoCurrentStatus() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MongoCurrentStatus", reflect.TypeOf((*MockPrecheckBackend)(nil).MongoCurrentStatus))
 }
 
 // NeedsCleanup mocks base method.

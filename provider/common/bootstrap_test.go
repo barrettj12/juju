@@ -5,7 +5,7 @@ package common_test
 
 import (
 	"context"
-	"crypto/rsa"
+	"crypto"
 	"fmt"
 	"io/ioutil"
 	"regexp"
@@ -29,6 +29,7 @@ import (
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/network"
+	coreseries "github.com/juju/juju/core/series"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/config"
@@ -125,11 +126,13 @@ func (s *BootstrapSuite) TestCannotStartInstance(c *gc.C) {
 
 		// The machine config should set its upgrade behavior based on
 		// the environment config.
+		base, err := coreseries.GetBaseFromSeries(args.InstanceConfig.Series)
+		c.Assert(err, jc.ErrorIsNil)
 		expectedMcfg, err := instancecfg.NewBootstrapInstanceConfig(
 			coretesting.FakeControllerConfig(),
 			args.Constraints,
 			args.Constraints,
-			args.InstanceConfig.Series,
+			base,
 			"",
 			nil,
 		)
@@ -143,7 +146,7 @@ func (s *BootstrapSuite) TestCannotStartInstance(c *gc.C) {
 			"juju-is-controller":   "true",
 		}
 		expectedMcfg.NetBondReconfigureDelay = env.Config().NetBondReconfigureDelay()
-		args.InstanceConfig.Bootstrap.InitialSSHHostKeys.RSA = nil
+		args.InstanceConfig.Bootstrap.InitialSSHHostKeys = nil
 		c.Assert(args.InstanceConfig, jc.DeepEquals, expectedMcfg)
 		return nil, nil, nil, errors.Errorf("meh, not started")
 	}
@@ -490,7 +493,7 @@ func (s *BootstrapSuite) TestStartInstanceStopOnZoneIndependentError(c *gc.C) {
 		error,
 	) {
 		callZones = append(callZones, args.AvailabilityZone)
-		return nil, nil, nil, common.ZoneIndependentError(errors.New("bloop"))
+		return nil, nil, nil, environs.ZoneIndependentError(errors.New("bloop"))
 	}
 
 	ctx := envtesting.BootstrapTODOContext(c)
@@ -586,13 +589,19 @@ func (s *BootstrapSuite) TestSuccess(c *gc.C) {
 	) {
 		icfg := args.InstanceConfig
 		innerInstanceConfig = icfg
-		c.Assert(icfg.Bootstrap.InitialSSHHostKeys.RSA, gc.NotNil)
-		privKey, err := cryptossh.ParseRawPrivateKey([]byte(icfg.Bootstrap.InitialSSHHostKeys.RSA.Private))
-		c.Assert(err, jc.ErrorIsNil)
-		c.Assert(privKey, gc.FitsTypeOf, &rsa.PrivateKey{})
-		pubKey, _, _, _, err := cryptossh.ParseAuthorizedKey([]byte(icfg.Bootstrap.InitialSSHHostKeys.RSA.Public))
-		c.Assert(err, jc.ErrorIsNil)
-		c.Assert(pubKey.Type(), gc.Equals, cryptossh.KeyAlgoRSA)
+		c.Assert(icfg.Bootstrap.InitialSSHHostKeys, gc.HasLen, 3)
+		for _, key := range icfg.Bootstrap.InitialSSHHostKeys {
+			privKey, err := cryptossh.ParseRawPrivateKey([]byte(key.Private))
+			c.Assert(err, jc.ErrorIsNil)
+			_, fits := privKey.(interface {
+				Public() crypto.PublicKey
+				Equal(crypto.PrivateKey) bool
+			})
+			c.Assert(fits, jc.IsTrue)
+			pubKey, _, _, _, err := cryptossh.ParseAuthorizedKey([]byte(key.Public))
+			c.Assert(err, jc.ErrorIsNil)
+			c.Assert(pubKey.Type(), gc.Equals, key.PublicKeyAlgorithm)
+		}
 		return inst, &checkHardware, nil, nil
 	}
 	var mocksConfig = minimalConfig(c)
@@ -632,12 +641,13 @@ func (s *BootstrapSuite) TestSuccess(c *gc.C) {
 
 	// Check that we make the SSH connection with desired options.
 	var knownHosts string
+	var hostKeyAlgos string
 	re := regexp.MustCompile(
 		"ssh '-o' 'StrictHostKeyChecking yes' " +
 			"'-o' 'PasswordAuthentication no' " +
 			"'-o' 'ServerAliveInterval 30' " +
 			"'-o' 'UserKnownHostsFile (.*)' " +
-			"'-o' 'HostKeyAlgorithms ssh-rsa' " +
+			"'-o' 'HostKeyAlgorithms (.*)' " +
 			"'ubuntu@testing.invalid' '/bin/bash'")
 	testing.PatchExecutableAsEchoArgs(c, s, "ssh")
 	testing.PatchExecutableAsEchoArgs(c, s, "scp")
@@ -661,6 +671,7 @@ func (s *BootstrapSuite) TestSuccess(c *gc.C) {
 				return err
 			}
 			knownHosts = string(knownHostsBytes)
+			hostKeyAlgos = submatch[2]
 		}
 		return nil
 	})
@@ -668,11 +679,19 @@ func (s *BootstrapSuite) TestSuccess(c *gc.C) {
 		Timeout: coretesting.LongWait,
 	})
 	c.Assert(err, gc.ErrorMatches, "invalid machine configuration: .*") // icfg hasn't been finalized
+	c.Assert(innerInstanceConfig.Bootstrap.InitialSSHHostKeys, gc.HasLen, 3)
+	computedKnownHosts := ""
+	computedHostKeyAlgos := []string{}
+	for _, key := range innerInstanceConfig.Bootstrap.InitialSSHHostKeys {
+		computedKnownHosts += "testing.invalid " + key.Public
+		computedHostKeyAlgos = append(computedHostKeyAlgos, key.PublicKeyAlgorithm)
+	}
 	c.Assert(
 		knownHosts,
 		gc.Equals,
-		"testing.invalid "+innerInstanceConfig.Bootstrap.InitialSSHHostKeys.RSA.Public,
+		computedKnownHosts,
 	)
+	c.Assert(strings.Split(hostKeyAlgos, ","), jc.SameContents, computedHostKeyAlgos)
 }
 
 func (s *BootstrapSuite) TestBootstrapFinalizeCloudInitUserData(c *gc.C) {

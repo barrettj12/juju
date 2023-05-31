@@ -172,6 +172,7 @@ func (s *allWatcherBaseSuite) setUpScenario(c *gc.C, st *State, units int) (enti
 		},
 		Life:                    life.Alive,
 		Series:                  "quantal",
+		Base:                    "ubuntu@12.10",
 		Jobs:                    jobs,
 		Addresses:               addresses,
 		HardwareCharacteristics: hc,
@@ -274,6 +275,7 @@ func (s *allWatcherBaseSuite) setUpScenario(c *gc.C, st *State, units int) (enti
 			Name:        fmt.Sprintf("wordpress/%d", i),
 			Application: wordpress.Name(),
 			Series:      m.Series(),
+			Base:        "ubuntu@12.10",
 			Life:        life.Alive,
 			MachineID:   m.Id(),
 			Annotations: pairs,
@@ -328,6 +330,7 @@ func (s *allWatcherBaseSuite) setUpScenario(c *gc.C, st *State, units int) (enti
 			},
 			Life:                    life.Alive,
 			Series:                  "quantal",
+			Base:                    "ubuntu@12.10",
 			Jobs:                    []coremodel.MachineJob{JobHostUnits.ToParams()},
 			Addresses:               []network.ProviderAddress{},
 			HardwareCharacteristics: hc,
@@ -355,6 +358,7 @@ func (s *allWatcherBaseSuite) setUpScenario(c *gc.C, st *State, units int) (enti
 			Name:        fmt.Sprintf("logging/%d", i),
 			Application: "logging",
 			Series:      "quantal",
+			Base:        "ubuntu@12.10",
 			Life:        life.Alive,
 			MachineID:   m.Id(),
 			Principal:   unitName,
@@ -375,7 +379,7 @@ func (s *allWatcherBaseSuite) setUpScenario(c *gc.C, st *State, units int) (enti
 	}
 
 	_, remoteApplicationInfo := addTestingRemoteApplication(
-		c, st, "remote-mysql1", "me/model.mysql", "remote-mysql1-uuid", mysqlRelations, false,
+		c, st, "remote-mysql1", "me/model.mysql", mysqlRelations, false,
 	)
 	add(&remoteApplicationInfo)
 
@@ -406,7 +410,7 @@ func (s *allWatcherBaseSuite) setUpScenario(c *gc.C, st *State, units int) (enti
 	// Set up a remote application related to the offer.
 	// It won't be included in the backing model.
 	addTestingRemoteApplication(
-		c, st, "remote-wordpress", "", "remote-wordpress-uuid", []charm.Relation{{
+		c, st, "remote-wordpress", "", []charm.Relation{{
 			Name:      "db",
 			Role:      "requirer",
 			Scope:     charm.ScopeGlobal,
@@ -414,7 +418,7 @@ func (s *allWatcherBaseSuite) setUpScenario(c *gc.C, st *State, units int) (enti
 		}}, true,
 	)
 	addTestingRemoteApplication(
-		c, st, "remote-wordpress2", "", "remote-wordpress2-uuid", []charm.Relation{{
+		c, st, "remote-wordpress2", "", []charm.Relation{{
 			Name:      "db",
 			Role:      "requirer",
 			Scope:     charm.ScopeGlobal,
@@ -434,7 +438,7 @@ func (s *allWatcherBaseSuite) setUpScenario(c *gc.C, st *State, units int) (enti
 			{ApplicationName: "remote-wordpress2", Relation: multiwatcher.CharmRelation{Name: "db", Role: "requirer", Interface: "mysql", Optional: false, Limit: 0, Scope: "global"}}},
 	})
 
-	_, applicationOfferInfo, rel2 := addTestingApplicationOffer(
+	applicationOfferInfo, rel2 := addTestingApplicationOffer(
 		c, st, s.owner, "hosted-mysql", "mysql", curl.Name, []string{"server"},
 	)
 	add(&multiwatcher.RelationInfo{
@@ -463,13 +467,12 @@ var mysqlRelations = []charm.Relation{{
 }}
 
 func addTestingRemoteApplication(
-	c *gc.C, st *State, name, url, offerUUID string, relations []charm.Relation, isProxy bool,
+	c *gc.C, st *State, name, url string, relations []charm.Relation, isProxy bool,
 ) (*RemoteApplication, multiwatcher.RemoteApplicationUpdate) {
 
 	rs, err := st.AddRemoteApplication(AddRemoteApplicationParams{
 		Name:            name,
 		URL:             url,
-		OfferUUID:       offerUUID,
 		SourceModel:     testing.ModelTag,
 		Endpoints:       relations,
 		IsConsumerProxy: isProxy,
@@ -489,7 +492,6 @@ func addTestingRemoteApplication(
 	return rs, multiwatcher.RemoteApplicationUpdate{
 		ModelUUID: st.ModelUUID(),
 		Name:      name,
-		OfferUUID: offerUUID,
 		OfferURL:  url,
 		Life:      life.Value(rs.Life().String()),
 		Status:    appStatus,
@@ -498,7 +500,7 @@ func addTestingRemoteApplication(
 
 func addTestingApplicationOffer(
 	c *gc.C, st *State, owner names.UserTag, offerName, applicationName, charmName string, endpoints []string,
-) (*crossmodel.ApplicationOffer, multiwatcher.ApplicationOfferInfo, *Relation) {
+) (multiwatcher.ApplicationOfferInfo, *Relation) {
 
 	eps := make(map[string]string)
 	for _, ep := range endpoints {
@@ -516,6 +518,8 @@ func addTestingApplicationOffer(
 	c.Assert(err, jc.ErrorIsNil)
 	rel, err := st.AddRelation(relEps...)
 	c.Assert(err, jc.ErrorIsNil)
+	err = rel.SetStatus(status.StatusInfo{Status: status.Joined})
+	c.Assert(err, jc.ErrorIsNil)
 	_, err = st.AddOfferConnection(AddOfferConnectionParams{
 		SourceModelUUID: utils.MustNewUUID().String(),
 		RelationId:      rel.Id(),
@@ -524,14 +528,14 @@ func addTestingApplicationOffer(
 		RelationKey:     rel.Tag().Id(),
 	})
 	c.Assert(err, jc.ErrorIsNil)
-	return offer, multiwatcher.ApplicationOfferInfo{
+	return multiwatcher.ApplicationOfferInfo{
 		ModelUUID:            st.ModelUUID(),
 		OfferName:            offerName,
 		OfferUUID:            offer.OfferUUID,
 		ApplicationName:      applicationName,
 		CharmName:            charmName,
 		TotalConnectedCount:  1,
-		ActiveConnectedCount: 0,
+		ActiveConnectedCount: 1,
 	}, rel
 }
 
@@ -565,9 +569,10 @@ func (s *allWatcherStateSuite) TestGetAllMultiModel(c *gc.C) {
 }
 
 func (s *allWatcherStateSuite) checkGetAll(c *gc.C, expectEntities entityInfoSlice) {
-	b := NewAllWatcherBacking(s.pool)
+	b, err := NewAllWatcherBacking(s.pool)
+	c.Assert(err, jc.ErrorIsNil)
 	all := multiwatcher.NewStore(loggo.GetLogger("test"))
-	err := b.GetAll(all)
+	err = b.GetAll(all)
 	c.Assert(err, jc.ErrorIsNil)
 	var gotEntities entityInfoSlice = all.All()
 	sort.Sort(gotEntities)
@@ -576,7 +581,8 @@ func (s *allWatcherStateSuite) checkGetAll(c *gc.C, expectEntities entityInfoSli
 }
 
 func applicationCharmURL(app *Application) *charm.URL {
-	url, _ := app.CharmURL()
+	urlStr, _ := app.CharmURL()
+	url := charm.MustParseURL(*urlStr)
 	return url
 }
 
@@ -621,12 +627,13 @@ func (s *allWatcherStateSuite) performChangeTestCases(c *gc.C, changeTestFuncs [
 		test := changeTestFunc(c, s.state)
 
 		c.Logf("test %d. %s", i, test.about)
-		b := NewAllWatcherBacking(s.pool)
+		b, err := NewAllWatcherBacking(s.pool)
+		c.Assert(err, jc.ErrorIsNil)
 		all := multiwatcher.NewStore(loggo.GetLogger("test"))
 		for _, info := range test.initialContents {
 			all.Update(info)
 		}
-		err := b.Changed(all, test.change)
+		err = b.Changed(all, test.change)
 		c.Assert(err, jc.ErrorIsNil)
 		entities := all.All()
 		assertEntitiesEqual(c, entities, test.expectContents)
@@ -820,6 +827,7 @@ func (s *allWatcherStateSuite) TestChangeCAASUnits(c *gc.C) {
 						Name:        "mysql/0",
 						Application: "mysql",
 						Series:      "kubernetes",
+						Base:        "kubernetes",
 						Life:        "alive",
 						WorkloadStatus: multiwatcher.StatusInfo{
 							Current: "waiting",
@@ -868,6 +876,7 @@ func (s *allWatcherStateSuite) TestChangeCAASUnits(c *gc.C) {
 						Name:        "mysql/0",
 						Application: "mysql",
 						Series:      "kubernetes",
+						Base:        "kubernetes",
 					},
 				},
 				change: watcher.Change{
@@ -880,6 +889,7 @@ func (s *allWatcherStateSuite) TestChangeCAASUnits(c *gc.C) {
 						Name:        "mysql/0",
 						Application: "mysql",
 						Series:      "kubernetes",
+						Base:        "kubernetes",
 						ContainerStatus: multiwatcher.StatusInfo{
 							Current: "maintenance",
 							Message: "setting up",
@@ -1045,7 +1055,8 @@ func (s *allWatcherStateSuite) TestClosingPorts(c *gc.C) {
 	privateAddress := network.NewSpaceAddress("4.3.2.1", network.WithScope(network.ScopeCloudLocal))
 	MustOpenUnitPortRange(c, s.state, m, u.Name(), allEndpoints, corenetwork.MustParsePortRange("12345/tcp"))
 	// Create all watcher state backing.
-	b := NewAllWatcherBacking(s.pool)
+	b, err := NewAllWatcherBacking(s.pool)
+	c.Assert(err, jc.ErrorIsNil)
 	all := multiwatcher.NewStore(loggo.GetLogger("test"))
 	machineInfo := &multiwatcher.MachineInfo{
 		ModelUUID:               s.state.ModelUUID(),
@@ -1068,6 +1079,7 @@ func (s *allWatcherStateSuite) TestClosingPorts(c *gc.C) {
 			Name:           "wordpress/0",
 			Application:    "wordpress",
 			Series:         "quantal",
+			Base:           "ubuntu@12.10",
 			Life:           life.Alive,
 			MachineID:      "0",
 			PublicAddress:  "1.2.3.4",
@@ -1103,6 +1115,7 @@ func (s *allWatcherStateSuite) TestClosingPorts(c *gc.C) {
 			Name:           "wordpress/0",
 			Application:    "wordpress",
 			Series:         "quantal",
+			Base:           "ubuntu@12.10",
 			MachineID:      "0",
 			Life:           life.Alive,
 			PublicAddress:  "1.2.3.4",
@@ -1126,7 +1139,8 @@ func (s *allWatcherStateSuite) TestClosingPorts(c *gc.C) {
 func (s *allWatcherStateSuite) TestApplicationSettings(c *gc.C) {
 	// Init the test model.
 	app := AddTestingApplication(c, s.state, "dummy-application", AddTestingCharm(c, s.state, "dummy"))
-	b := NewAllWatcherBacking(s.pool)
+	b, err := NewAllWatcherBacking(s.pool)
+	c.Assert(err, jc.ErrorIsNil)
 	all := multiwatcher.NewStore(loggo.GetLogger("test"))
 	// 1st scenario part: set settings and signal change.
 	setApplicationConfigAttr(c, app, "username", "foo")
@@ -1136,7 +1150,7 @@ func (s *allWatcherStateSuite) TestApplicationSettings(c *gc.C) {
 		Name:      "dummy-application",
 		CharmURL:  "local:quantal/quantal-dummy-1",
 	})
-	err := b.Changed(all, watcher.Change{
+	err = b.Changed(all, watcher.Change{
 		C:  "settings",
 		Id: s.state.docID("a#dummy-application#local:quantal/quantal-dummy-1"),
 	})
@@ -1179,12 +1193,13 @@ func (s *allModelWatcherStateSuite) Reset(c *gc.C) {
 	s.SetUpTest(c)
 }
 
-func (s *allModelWatcherStateSuite) NewAllWatcherBacking() AllWatcherBacking {
+func (s *allModelWatcherStateSuite) NewAllWatcherBacking() (AllWatcherBacking, error) {
 	return NewAllWatcherBacking(s.pool)
 }
 
 func (s *allModelWatcherStateSuite) TestMissingModelNotError(c *gc.C) {
-	b := s.NewAllWatcherBacking()
+	b, err := s.NewAllWatcherBacking()
+	c.Assert(err, jc.ErrorIsNil)
 	all := multiwatcher.NewStore(loggo.GetLogger("test"))
 
 	dyingModel := "fake-uuid"
@@ -1211,14 +1226,15 @@ func (s *allModelWatcherStateSuite) performChangeTestCases(c *gc.C, changeTestFu
 			test0 := changeTestFunc(c, s.state)
 
 			c.Logf("test %d. %s", i, test0.about)
-			b := s.NewAllWatcherBacking()
+			b, err := s.NewAllWatcherBacking()
+			c.Assert(err, jc.ErrorIsNil)
 			all := multiwatcher.NewStore(loggo.GetLogger("test"))
 
 			// Do updates and check for first model.
 			for _, info := range test0.initialContents {
 				all.Update(info)
 			}
-			err := b.Changed(all, test0.change)
+			err = b.Changed(all, test0.change)
 			c.Assert(err, jc.ErrorIsNil)
 			var entities entityInfoSlice = all.All()
 			assertEntitiesEqual(c, entities, test0.expectContents)
@@ -1446,7 +1462,8 @@ func (s *allModelWatcherStateSuite) TestChangeForDeadModel(c *gc.C) {
 	// Ensure an entity is removed when a change is seen but
 	// the model the entity belonged to has already died.
 
-	b := NewAllWatcherBacking(s.pool)
+	b, err := NewAllWatcherBacking(s.pool)
+	c.Assert(err, jc.ErrorIsNil)
 	all := multiwatcher.NewStore(loggo.GetLogger("test"))
 
 	// Insert a machine for an model that doesn't actually
@@ -1457,7 +1474,7 @@ func (s *allModelWatcherStateSuite) TestChangeForDeadModel(c *gc.C) {
 	})
 	c.Assert(all.All(), gc.HasLen, 1)
 
-	err := b.Changed(all, watcher.Change{
+	err = b.Changed(all, watcher.Change{
 		C:  "machines",
 		Id: ensureModelUUID("uuid", "0"),
 	})
@@ -1469,7 +1486,8 @@ func (s *allModelWatcherStateSuite) TestChangeForDeadModel(c *gc.C) {
 
 func (s *allModelWatcherStateSuite) TestModelSettings(c *gc.C) {
 	// Init the test model.
-	b := s.NewAllWatcherBacking()
+	b, err := s.NewAllWatcherBacking()
+	c.Assert(err, jc.ErrorIsNil)
 	all := multiwatcher.NewStore(loggo.GetLogger("test"))
 	setModelConfigAttr(c, s.state, "http-proxy", "http://invalid")
 	setModelConfigAttr(c, s.state, "foo", "bar")
@@ -1841,6 +1859,7 @@ func testChangeMachines(c *gc.C, runChangeTests func(*gc.C, []changeTestFunc)) {
 						},
 						Life:      life.Alive,
 						Series:    "quantal",
+						Base:      "ubuntu@12.10",
 						Jobs:      []coremodel.MachineJob{JobHostUnits.ToParams()},
 						Addresses: []network.ProviderAddress{},
 						HasVote:   false,
@@ -1900,6 +1919,7 @@ func testChangeMachines(c *gc.C, runChangeTests func(*gc.C, []changeTestFunc)) {
 						},
 						Life:                     life.Alive,
 						Series:                   "trusty",
+						Base:                     "ubuntu@14.04",
 						Jobs:                     []coremodel.MachineJob{JobHostUnits.ToParams()},
 						Addresses:                []network.ProviderAddress{},
 						HardwareCharacteristics:  &instance.HardwareCharacteristics{},
@@ -2476,12 +2496,12 @@ func testChangeCharms(c *gc.C, owner names.UserTag, runChangeTests func(*gc.C, [
 				about: "charm is added if it's in backing but not in Store",
 				change: watcher.Change{
 					C:  "charms",
-					Id: st.docID(ch.URL().String()),
+					Id: st.docID(ch.String()),
 				},
 				expectContents: []multiwatcher.EntityInfo{
 					&multiwatcher.CharmInfo{
 						ModelUUID:     st.ModelUUID(),
-						CharmURL:      ch.URL().String(),
+						CharmURL:      ch.String(),
 						Life:          life.Alive,
 						DefaultConfig: map[string]interface{}{"blog-title": "My Title"},
 					}}}
@@ -2605,6 +2625,7 @@ func testChangeUnits(c *gc.C, owner names.UserTag, runChangeTests func(*gc.C, []
 						Name:        "wordpress/0",
 						Application: "wordpress",
 						Series:      "quantal",
+						Base:        "ubuntu@12.10",
 						Life:        life.Alive,
 						MachineID:   "0",
 						OpenPortRangesByEndpoint: network.GroupedPortRanges{
@@ -2674,6 +2695,7 @@ func testChangeUnits(c *gc.C, owner names.UserTag, runChangeTests func(*gc.C, []
 						Name:        "wordpress/0",
 						Application: "wordpress",
 						Series:      "quantal",
+						Base:        "ubuntu@12.10",
 						Life:        life.Alive,
 						MachineID:   "0",
 						OpenPortRangesByEndpoint: network.GroupedPortRanges{
@@ -2766,6 +2788,7 @@ func testChangeUnits(c *gc.C, owner names.UserTag, runChangeTests func(*gc.C, []
 						Name:        "wordpress/0",
 						Application: "wordpress",
 						Series:      "quantal",
+						Base:        "ubuntu@12.10",
 						Life:        life.Alive,
 						MachineID:   "0",
 						WorkloadStatus: multiwatcher.StatusInfo{
@@ -2831,6 +2854,7 @@ func testChangeUnits(c *gc.C, owner names.UserTag, runChangeTests func(*gc.C, []
 						Name:           "wordpress/0",
 						Application:    "wordpress",
 						Series:         "quantal",
+						Base:           "ubuntu@12.10",
 						Life:           life.Alive,
 						PublicAddress:  "public",
 						PrivateAddress: "private",
@@ -3230,6 +3254,7 @@ func testChangeUnitsNonNilPorts(c *gc.C, owner names.UserTag, runChangeTests fun
 						Name:        "wordpress/0",
 						Application: "wordpress",
 						Series:      "quantal",
+						Base:        "ubuntu@12.10",
 						Life:        life.Alive,
 						MachineID:   "0",
 						WorkloadStatus: multiwatcher.StatusInfo{
@@ -3262,6 +3287,7 @@ func testChangeUnitsNonNilPorts(c *gc.C, owner names.UserTag, runChangeTests fun
 						Name:        "wordpress/0",
 						Application: "wordpress",
 						Series:      "quantal",
+						Base:        "ubuntu@12.10",
 						Life:        life.Alive,
 						MachineID:   "0",
 						OpenPortRangesByEndpoint: network.GroupedPortRanges{
@@ -3297,6 +3323,7 @@ func testChangeUnitsNonNilPorts(c *gc.C, owner names.UserTag, runChangeTests fun
 						Name:        "wordpress/0",
 						Application: "wordpress",
 						Series:      "quantal",
+						Base:        "ubuntu@12.10",
 						Life:        life.Alive,
 						MachineID:   "0",
 						WorkloadStatus: multiwatcher.StatusInfo{
@@ -3329,6 +3356,7 @@ func testChangeUnitsNonNilPorts(c *gc.C, owner names.UserTag, runChangeTests fun
 						Name:        "wordpress/0",
 						Application: "wordpress",
 						Series:      "quantal",
+						Base:        "ubuntu@12.10",
 						Life:        life.Alive,
 						WorkloadStatus: multiwatcher.StatusInfo{
 							Current: "waiting",
@@ -3366,7 +3394,6 @@ func testChangeRemoteApplications(c *gc.C, runChangeTests func(*gc.C, []changeTe
 						ModelUUID: st.ModelUUID(),
 						Name:      "remote-mysql2",
 						OfferURL:  "me/model.mysql",
-						OfferUUID: "remote-mysql2-uuid",
 					},
 				},
 				change: watcher.Change{
@@ -3376,7 +3403,7 @@ func testChangeRemoteApplications(c *gc.C, runChangeTests func(*gc.C, []changeTe
 		},
 		func(c *gc.C, st *State) changeTestCase {
 			_, remoteApplicationInfo := addTestingRemoteApplication(
-				c, st, "remote-mysql2", "me/model.mysql", "remote-mysql2-uuid", mysqlRelations, false)
+				c, st, "remote-mysql2", "me/model.mysql", mysqlRelations, false)
 			return changeTestCase{
 				about: "remote application is added if it's in backing but not in Store",
 				change: watcher.Change{
@@ -3396,7 +3423,7 @@ func testChangeRemoteApplications(c *gc.C, runChangeTests func(*gc.C, []changeTe
 			// upon destroying.
 			wordpress := AddTestingApplication(c, st, "wordpress", AddTestingCharm(c, st, "wordpress"))
 			mysql, remoteApplicationInfo := addTestingRemoteApplication(
-				c, st, "remote-mysql2", "me/model.mysql", "remote-mysql2-uuid", mysqlRelations, false,
+				c, st, "remote-mysql2", "me/model.mysql", mysqlRelations, false,
 			)
 
 			eps, err := st.InferEndpoints("wordpress", "remote-mysql2")
@@ -3440,7 +3467,7 @@ func testChangeRemoteApplications(c *gc.C, runChangeTests func(*gc.C, []changeTe
 		},
 		func(c *gc.C, st *State) changeTestCase {
 			mysql, remoteApplicationInfo := addTestingRemoteApplication(
-				c, st, "remote-mysql2", "me/model.mysql", "remote-mysql2-uuid", mysqlRelations, false,
+				c, st, "remote-mysql2", "me/model.mysql", mysqlRelations, false,
 			)
 			now := st.clock().Now()
 			sInfo := status.StatusInfo{
@@ -3473,22 +3500,22 @@ func testChangeRemoteApplications(c *gc.C, runChangeTests func(*gc.C, []changeTe
 }
 
 func testChangeApplicationOffers(c *gc.C, runChangeTests func(*gc.C, []changeTestFunc)) {
-	addOffer := func(c *gc.C, st *State) (multiwatcher.ApplicationOfferInfo, *User, string) {
+	addOffer := func(c *gc.C, st *State) (multiwatcher.ApplicationOfferInfo, *User) {
 		owner, err := st.AddUser("owner", "owner", "password", "admin")
 		c.Assert(err, jc.ErrorIsNil)
 		AddTestingApplication(c, st, "mysql", AddTestingCharm(c, st, "mysql"))
 		addTestingRemoteApplication(
-			c, st, "remote-wordpress", "", "remote-wordpress-uuid", []charm.Relation{{
+			c, st, "remote-wordpress", "", []charm.Relation{{
 				Name:      "db",
 				Role:      "requirer",
 				Scope:     charm.ScopeGlobal,
 				Interface: "mysql",
 			}}, true,
 		)
-		offer, applicationOfferInfo, _ := addTestingApplicationOffer(
+		applicationOfferInfo, _ := addTestingApplicationOffer(
 			c, st, owner.UserTag(), "hosted-mysql", "mysql",
 			"quantal-mysql", []string{"server"})
-		return applicationOfferInfo, owner, offer.OfferUUID
+		return applicationOfferInfo, owner
 	}
 
 	changeTestFuncs := []changeTestFunc{
@@ -3517,7 +3544,7 @@ func testChangeApplicationOffers(c *gc.C, runChangeTests func(*gc.C, []changeTes
 				}}
 		},
 		func(c *gc.C, st *State) changeTestCase {
-			applicationOfferInfo, _, _ := addOffer(c, st)
+			applicationOfferInfo, _ := addOffer(c, st)
 			return changeTestCase{
 				about: "application offer is added if it's in backing but not in Store",
 				change: watcher.Change{
@@ -3528,10 +3555,11 @@ func testChangeApplicationOffers(c *gc.C, runChangeTests func(*gc.C, []changeTes
 			}
 		},
 		func(c *gc.C, st *State) changeTestCase {
-			applicationOfferInfo, owner, _ := addOffer(c, st)
+			applicationOfferInfo, owner := addOffer(c, st)
 			app, err := st.Application("mysql")
 			c.Assert(err, jc.ErrorIsNil)
-			curl, _ := app.CharmURL()
+			curlStr, _ := app.CharmURL()
+			curl := charm.MustParseURL(*curlStr)
 			ch, err := st.Charm(curl)
 			c.Assert(err, jc.ErrorIsNil)
 			AddTestingApplication(c, st, "another-mysql", ch)
@@ -3547,7 +3575,7 @@ func testChangeApplicationOffers(c *gc.C, runChangeTests func(*gc.C, []changeTes
 			initialApplicationOfferInfo := applicationOfferInfo
 			applicationOfferInfo.ApplicationName = "another-mysql"
 			return changeTestCase{
-				about:           "application offer is updated if it's in backing and in multiwatcher.Store",
+				about:           "application offer is updated if it's in backing and not in multiwatcher.Store",
 				initialContents: []multiwatcher.EntityInfo{&initialApplicationOfferInfo},
 				change: watcher.Change{
 					C:  "applicationOffers",
@@ -3557,10 +3585,10 @@ func testChangeApplicationOffers(c *gc.C, runChangeTests func(*gc.C, []changeTes
 			}
 		},
 		func(c *gc.C, st *State) changeTestCase {
-			applicationOfferInfo, _, offerUUID := addOffer(c, st)
+			applicationOfferInfo, _ := addOffer(c, st)
 			initialApplicationOfferInfo := applicationOfferInfo
 			addTestingRemoteApplication(
-				c, st, "remote-wordpress2", "", offerUUID, []charm.Relation{{
+				c, st, "remote-wordpress2", "", []charm.Relation{{
 					Name:      "db",
 					Role:      "requirer",
 					Scope:     charm.ScopeGlobal,

@@ -31,6 +31,8 @@ import (
 
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/permission"
+	"github.com/juju/juju/core/resources"
+	coreseries "github.com/juju/juju/core/series"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/mongo"
 	"github.com/juju/juju/mongo/utils"
@@ -159,7 +161,7 @@ func CloudModelRefCount(st *State, cloudName string) (int, error) {
 	return nsRefcounts.read(refcounts, key)
 }
 
-func ApplicationSettingsRefCount(st *State, appName string, curl *charm.URL) (int, error) {
+func ApplicationSettingsRefCount(st *State, appName string, curl *string) (int, error) {
 	refcounts, closer := st.db().GetCollection(refcountsC)
 	defer closer()
 
@@ -185,6 +187,10 @@ func ControllerRefCount(st *State, controllerUUID string) (int, error) {
 
 func AddTestingCharm(c *gc.C, st *State, name string) *Charm {
 	return addCharm(c, st, "quantal", testcharms.Repo.CharmDir(name))
+}
+
+func AddTestingCharmFromRepo(c *gc.C, st *State, name string, repo *charmrepotesting.Repo) *Charm {
+	return addCharm(c, st, "quantal", repo.CharmDir(name))
 }
 
 func getCharmRepo(series string) *charmrepotesting.Repo {
@@ -297,11 +303,29 @@ type addTestingApplicationParams struct {
 
 func addTestingApplication(c *gc.C, params addTestingApplicationParams) *Application {
 	c.Assert(params.ch, gc.NotNil)
+
+	series := params.series
+	if params.series == "" {
+		series = params.ch.URL().Series
+	}
+
+	origin := params.origin
+	if params.origin == nil {
+		base, err := coreseries.GetBaseFromSeries(series)
+		c.Assert(err, jc.ErrorIsNil)
+
+		origin = &CharmOrigin{Platform: &Platform{
+			Architecture: params.ch.URL().Architecture,
+			OS:           base.Name,
+			Series:       series,
+		}}
+	}
+
 	app, err := params.st.AddApplication(AddApplicationArgs{
 		Name:             params.name,
-		Series:           params.series,
+		Series:           series,
 		Charm:            params.ch,
-		CharmOrigin:      params.origin,
+		CharmOrigin:      origin,
 		EndpointBindings: params.bindings,
 		Storage:          params.storage,
 		Devices:          params.devices,
@@ -866,10 +890,18 @@ func GetInternalWorkers(st *State) worker.Worker {
 // ResourceStoragePath returns the path used to store resource content
 // in the managed blob store, given the resource ID.
 func ResourceStoragePath(c *gc.C, st *State, id string) string {
-	p := NewResourcePersistence(st.newPersistence())
-	_, storagePath, err := p.GetResource(id)
+	p := st.Resources().(*resourcePersistence)
+	_, storagePath, err := p.getResource(id)
 	c.Assert(err, jc.ErrorIsNil)
 	return storagePath
+}
+
+func StagedResourceForTest(c *gc.C, st *State, res resources.Resource) *StagedResource {
+	persist := st.Resources().(*resourcePersistence)
+	storagePath := storagePath(res.Name, res.ApplicationID, res.PendingID)
+	r, err := persist.stageResource(res, storagePath)
+	c.Assert(err, jc.ErrorIsNil)
+	return r
 }
 
 // IsBlobStored returns true if a given storage path is in used in the
@@ -901,6 +933,22 @@ func AssertNoCleanupsWithKind(c *gc.C, st *State, kind cleanupKind) {
 			c.Fatalf("found cleanup of kind %q", kind)
 		}
 	}
+}
+
+// AssertNoCleanupsWithKind checks that there is at least
+// one cleanup of a given kind scheduled.
+func AssertCleanupsWithKind(c *gc.C, st *State, kind cleanupKind) {
+	var docs []cleanupDoc
+	cleanups, closer := st.db().GetCollection(cleanupsC)
+	defer closer()
+	err := cleanups.Find(nil).All(&docs)
+	c.Assert(err, jc.ErrorIsNil)
+	for _, doc := range docs {
+		if doc.Kind == kind {
+			return
+		}
+	}
+	c.Fatalf("found no cleanups of kind %q", kind)
 }
 
 // AssertNoCleanups checks that there are no cleanups scheduled.
@@ -1024,16 +1072,6 @@ func MachinePortOps(st *State, m description.Machine) ([]txn.Op, error) {
 	return []txn.Op{resolver.machinePortsOp(m)}, nil
 }
 
-func GetSecretRotateTime(c *gc.C, st *State, id int) time.Time {
-	secretRotateCollection, closer := st.db().GetCollection(secretRotateC)
-	defer closer()
-
-	var doc secretRotationDoc
-	err := secretRotateCollection.FindId(secretGlobalKey(id)).One(&doc)
-	c.Assert(err, jc.ErrorIsNil)
-	return doc.LastRotateTime
-}
-
 // ModelBackendShim is required to live here in the export_test.go file because
 // there is issues placing this in the test files themselves. The strangeness
 // exhibits itself from the fact that `clock() clock.Clock` doesn't type
@@ -1069,7 +1107,7 @@ func (s ModelBackendShim) db() Database {
 	return s.Database
 }
 
-func (s ModelBackendShim) modelUUID() string {
+func (s ModelBackendShim) ModelUUID() string {
 	return ""
 }
 
@@ -1077,7 +1115,7 @@ func (s ModelBackendShim) modelName() (string, error) {
 	return "", nil
 }
 
-func (s ModelBackendShim) isController() bool {
+func (s ModelBackendShim) IsController() bool {
 	return false
 }
 
@@ -1118,4 +1156,24 @@ var (
 
 func (st *State) ScheduleForceCleanup(kind cleanupKind, name string, maxWait time.Duration) {
 	st.scheduleForceCleanup(kind, name, maxWait)
+}
+
+func GetCollectionCappedInfo(coll *mgo.Collection) (bool, int, error) {
+	return getCollectionCappedInfo(coll)
+}
+
+func (m *Model) AllActionIDsHasActionNotifications() ([]string, error) {
+	actionNotifications, closer := m.st.db().GetCollection(actionNotificationsC)
+	defer closer()
+
+	docs := []actionNotificationDoc{}
+	err := actionNotifications.Find(nil).All(&docs)
+	if err != nil {
+		return nil, errors.Annotatef(err, "cannot get all actions")
+	}
+	actionIDs := make([]string, len(docs))
+	for i, doc := range docs {
+		actionIDs[i] = doc.ActionID
+	}
+	return actionIDs, nil
 }

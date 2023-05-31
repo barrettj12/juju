@@ -208,50 +208,90 @@ func (*localTests) TestPortsToRuleInfo(c *gc.C) {
 	}{{
 		about: "single port",
 		rules: firewall.IngressRules{firewall.NewIngressRule(network.MustParsePortRange("80/tcp"))},
-		expected: []neutron.RuleInfoV2{{
-			Direction:      "ingress",
-			IPProtocol:     "tcp",
-			PortRangeMin:   80,
-			PortRangeMax:   80,
-			RemoteIPPrefix: "0.0.0.0/0",
-			ParentGroupId:  groupId,
-			EthernetType:   "IPv4",
-		}},
+		expected: []neutron.RuleInfoV2{
+			{
+				Direction:      "ingress",
+				IPProtocol:     "tcp",
+				PortRangeMin:   80,
+				PortRangeMax:   80,
+				RemoteIPPrefix: "0.0.0.0/0",
+				ParentGroupId:  groupId,
+				EthernetType:   "IPv4",
+			},
+			{
+				Direction:      "ingress",
+				IPProtocol:     "tcp",
+				PortRangeMin:   80,
+				PortRangeMax:   80,
+				RemoteIPPrefix: "::/0",
+				ParentGroupId:  groupId,
+				EthernetType:   "IPv6",
+			},
+		},
 	}, {
 		about: "multiple ports",
 		rules: firewall.IngressRules{firewall.NewIngressRule(network.MustParsePortRange("80-82/tcp"))},
-		expected: []neutron.RuleInfoV2{{
-			Direction:      "ingress",
-			IPProtocol:     "tcp",
-			PortRangeMin:   80,
-			PortRangeMax:   82,
-			RemoteIPPrefix: "0.0.0.0/0",
-			ParentGroupId:  groupId,
-			EthernetType:   "IPv4",
-		}},
+		expected: []neutron.RuleInfoV2{
+			{
+				Direction:      "ingress",
+				IPProtocol:     "tcp",
+				PortRangeMin:   80,
+				PortRangeMax:   82,
+				RemoteIPPrefix: "0.0.0.0/0",
+				ParentGroupId:  groupId,
+				EthernetType:   "IPv4",
+			},
+			{
+				Direction:      "ingress",
+				IPProtocol:     "tcp",
+				PortRangeMin:   80,
+				PortRangeMax:   82,
+				RemoteIPPrefix: "::/0",
+				ParentGroupId:  groupId,
+				EthernetType:   "IPv6",
+			},
+		},
 	}, {
 		about: "multiple port ranges",
 		rules: firewall.IngressRules{
 			firewall.NewIngressRule(network.MustParsePortRange("80-82/tcp")),
 			firewall.NewIngressRule(network.MustParsePortRange("100-120/tcp")),
 		},
-		expected: []neutron.RuleInfoV2{{
-			Direction:      "ingress",
-			IPProtocol:     "tcp",
-			PortRangeMin:   80,
-			PortRangeMax:   82,
-			RemoteIPPrefix: "0.0.0.0/0",
-			ParentGroupId:  groupId,
-			EthernetType:   "IPv4",
-		}, {
-			Direction:      "ingress",
-			IPProtocol:     "tcp",
-			PortRangeMin:   100,
-			PortRangeMax:   120,
-			RemoteIPPrefix: "0.0.0.0/0",
-			ParentGroupId:  groupId,
-			EthernetType:   "IPv4",
-		}},
+		expected: []neutron.RuleInfoV2{
+			{
+				Direction:      "ingress",
+				IPProtocol:     "tcp",
+				PortRangeMin:   80,
+				PortRangeMax:   82,
+				RemoteIPPrefix: "0.0.0.0/0",
+				ParentGroupId:  groupId,
+				EthernetType:   "IPv4",
+			}, {
+				Direction:      "ingress",
+				IPProtocol:     "tcp",
+				PortRangeMin:   100,
+				PortRangeMax:   120,
+				RemoteIPPrefix: "0.0.0.0/0",
+				ParentGroupId:  groupId,
+				EthernetType:   "IPv4",
+			}, {
+				Direction:      "ingress",
+				IPProtocol:     "tcp",
+				PortRangeMin:   80,
+				PortRangeMax:   82,
+				RemoteIPPrefix: "::/0",
+				ParentGroupId:  groupId,
+				EthernetType:   "IPv6",
+			}, {
+				Direction:      "ingress",
+				IPProtocol:     "tcp",
+				PortRangeMin:   100,
+				PortRangeMax:   120,
+				RemoteIPPrefix: "::/0",
+				ParentGroupId:  groupId,
+				EthernetType:   "IPv6",
+			},
+		},
 	}, {
 		about: "source range",
 		rules: firewall.IngressRules{firewall.NewIngressRule(network.MustParsePortRange("80-100/tcp"), "192.168.1.0/24", "0.0.0.0/0")},
@@ -481,10 +521,7 @@ func (localTests) TestPingInvalidHost(c *gc.C) {
 			c.Errorf("ping %q: expected error, but got nil.", t)
 			continue
 		}
-		expected := "No Openstack server running at " + t
-		if err.Error() != expected {
-			c.Errorf("ping %q: expected %q got %v", t, expected, err)
-		}
+		c.Check(err, gc.ErrorMatches, "(?m)No Openstack server running at "+t+".*")
 	}
 }
 func (localTests) TestPingNoEndpoint(c *gc.C) {
@@ -493,7 +530,7 @@ func (localTests) TestPingNoEndpoint(c *gc.C) {
 	p, err := environs.Provider("openstack")
 	c.Assert(err, jc.ErrorIsNil)
 	err = p.Ping(context.NewEmptyCloudCallContext(), server.URL)
-	c.Assert(err, gc.ErrorMatches, "No Openstack server running at "+server.URL)
+	c.Assert(err, gc.ErrorMatches, "(?m)No Openstack server running at "+server.URL+".*")
 }
 
 func (localTests) TestPingInvalidResponse(c *gc.C) {
@@ -504,7 +541,7 @@ func (localTests) TestPingInvalidResponse(c *gc.C) {
 	p, err := environs.Provider("openstack")
 	c.Assert(err, jc.ErrorIsNil)
 	err = p.Ping(context.NewEmptyCloudCallContext(), server.URL)
-	c.Assert(err, gc.ErrorMatches, "No Openstack server running at "+server.URL)
+	c.Assert(err, gc.ErrorMatches, "(?m)No Openstack server running at "+server.URL+".*")
 }
 
 func (localTests) TestPingOKCACertificate(c *gc.C) {

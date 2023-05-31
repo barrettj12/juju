@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/golang/mock/gomock"
+	"github.com/juju/clock"
 	"github.com/juju/loggo"
 	"github.com/juju/names/v4"
 	jc "github.com/juju/testing/checkers"
@@ -78,6 +79,7 @@ func (s *statusSuite) TestFullStatus(c *gc.C) {
 	}
 	c.Check(resultMachine.Id, gc.Equals, machine.Id())
 	c.Check(resultMachine.Series, gc.Equals, machine.Series())
+	c.Check(resultMachine.Base, jc.DeepEquals, params.Base{Name: "ubuntu", Channel: "12.10/stable"})
 	c.Check(resultMachine.LXDProfiles, gc.HasLen, 0)
 }
 
@@ -331,14 +333,14 @@ func (s *statusUnitTestSuite) TestModelMeterStatus(c *gc.C) {
 
 func (s *statusUnitTestSuite) TestMeterStatus(c *gc.C) {
 	meteredCharm := s.Factory.MakeCharm(c, &factory.CharmParams{Name: "metered", URL: "cs:quantal/metered"})
-	service := s.Factory.MakeApplication(c, &factory.ApplicationParams{Charm: meteredCharm})
+	app := s.Factory.MakeApplication(c, &factory.ApplicationParams{Charm: meteredCharm})
 
-	units, err := service.AllUnits()
+	units, err := app.AllUnits()
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(units, gc.HasLen, 0)
 
 	for i, unit := range testUnits {
-		u, err := service.AddUnit(state.AddUnitParams{})
+		u, err := app.AddUnit(state.AddUnitParams{})
 		testUnits[i].unitName = u.Name()
 		c.Assert(err, jc.ErrorIsNil)
 		if unit.setStatus != nil {
@@ -351,12 +353,12 @@ func (s *statusUnitTestSuite) TestMeterStatus(c *gc.C) {
 	status, err := client.Status(nil)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(status, gc.NotNil)
-	serviceStatus, ok := status.Applications[service.Name()]
+	appStatus, ok := status.Applications[app.Name()]
 	c.Assert(ok, gc.Equals, true)
 
-	c.Assert(serviceStatus.MeterStatuses, gc.HasLen, len(testUnits)-1)
+	c.Assert(appStatus.MeterStatuses, gc.HasLen, len(testUnits)-1)
 	for _, unit := range testUnits {
-		unitStatus, ok := serviceStatus.MeterStatuses[unit.unitName]
+		unitStatus, ok := appStatus.MeterStatuses[unit.unitName]
 
 		if unit.expectedStatus != nil {
 			c.Assert(ok, gc.Equals, true)
@@ -368,14 +370,14 @@ func (s *statusUnitTestSuite) TestMeterStatus(c *gc.C) {
 }
 
 func (s *statusUnitTestSuite) TestNoMeterStatusWhenNotRequired(c *gc.C) {
-	service := s.Factory.MakeApplication(c, nil)
+	app := s.Factory.MakeApplication(c, nil)
 
-	units, err := service.AllUnits()
+	units, err := app.AllUnits()
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(units, gc.HasLen, 0)
 
 	for i, unit := range testUnits {
-		u, err := service.AddUnit(state.AddUnitParams{})
+		u, err := app.AddUnit(state.AddUnitParams{})
 		testUnits[i].unitName = u.Name()
 		c.Assert(err, jc.ErrorIsNil)
 		if unit.setStatus != nil {
@@ -388,22 +390,22 @@ func (s *statusUnitTestSuite) TestNoMeterStatusWhenNotRequired(c *gc.C) {
 	status, err := client.Status(nil)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(status, gc.NotNil)
-	serviceStatus, ok := status.Applications[service.Name()]
+	appStatus, ok := status.Applications[app.Name()]
 	c.Assert(ok, gc.Equals, true)
 
-	c.Assert(serviceStatus.MeterStatuses, gc.HasLen, 0)
+	c.Assert(appStatus.MeterStatuses, gc.HasLen, 0)
 }
 
 func (s *statusUnitTestSuite) TestMeterStatusWithCredentials(c *gc.C) {
-	service := s.Factory.MakeApplication(c, nil)
-	c.Assert(service.SetMetricCredentials([]byte("magic-ticket")), jc.ErrorIsNil)
+	app := s.Factory.MakeApplication(c, nil)
+	c.Assert(app.SetMetricCredentials([]byte("magic-ticket")), jc.ErrorIsNil)
 
-	units, err := service.AllUnits()
+	units, err := app.AllUnits()
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(units, gc.HasLen, 0)
 
 	for i, unit := range testUnits {
-		u, err := service.AddUnit(state.AddUnitParams{})
+		u, err := app.AddUnit(state.AddUnitParams{})
 		testUnits[i].unitName = u.Name()
 		c.Assert(err, jc.ErrorIsNil)
 		if unit.setStatus != nil {
@@ -416,12 +418,12 @@ func (s *statusUnitTestSuite) TestMeterStatusWithCredentials(c *gc.C) {
 	status, err := client.Status(nil)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(status, gc.NotNil)
-	serviceStatus, ok := status.Applications[service.Name()]
+	appStatus, ok := status.Applications[app.Name()]
 	c.Assert(ok, gc.Equals, true)
 
-	c.Assert(serviceStatus.MeterStatuses, gc.HasLen, len(testUnits)-1)
+	c.Assert(appStatus.MeterStatuses, gc.HasLen, len(testUnits)-1)
 	for _, unit := range testUnits {
-		unitStatus, ok := serviceStatus.MeterStatuses[unit.unitName]
+		unitStatus, ok := appStatus.MeterStatuses[unit.unitName]
 
 		if unit.expectedStatus != nil {
 			c.Assert(ok, gc.Equals, true)
@@ -434,8 +436,8 @@ func (s *statusUnitTestSuite) TestMeterStatusWithCredentials(c *gc.C) {
 
 func (s *statusUnitTestSuite) TestApplicationWithExposedEndpoints(c *gc.C) {
 	meteredCharm := s.Factory.MakeCharm(c, &factory.CharmParams{Name: "metered", URL: "cs:quantal/metered"})
-	service := s.Factory.MakeApplication(c, &factory.ApplicationParams{Charm: meteredCharm})
-	err := service.MergeExposeSettings(map[string]state.ExposedEndpoint{
+	app := s.Factory.MakeApplication(c, &factory.ApplicationParams{Charm: meteredCharm})
+	err := app.MergeExposeSettings(map[string]state.ExposedEndpoint{
 		"": {
 			ExposeToSpaceIDs: []string{network.AlphaSpaceId},
 			ExposeToCIDRs:    []string{"10.0.0.0/24", "192.168.0.0/24"},
@@ -447,15 +449,96 @@ func (s *statusUnitTestSuite) TestApplicationWithExposedEndpoints(c *gc.C) {
 	status, err := client.Status(nil)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(status, gc.NotNil)
-	serviceStatus, ok := status.Applications[service.Name()]
+	appStatus, ok := status.Applications[app.Name()]
 	c.Assert(ok, gc.Equals, true)
 
-	c.Assert(serviceStatus.ExposedEndpoints, gc.DeepEquals, map[string]params.ExposedEndpoint{
+	c.Assert(appStatus.ExposedEndpoints, gc.DeepEquals, map[string]params.ExposedEndpoint{
 		"": {
 			ExposeToSpaces: []string{network.AlphaSpaceName},
 			ExposeToCIDRs:  []string{"10.0.0.0/24", "192.168.0.0/24"},
 		},
 	})
+}
+
+func (s *statusUnitTestSuite) TestPrincipalUpgradingFrom(c *gc.C) {
+	meteredCharm := s.Factory.MakeCharm(c, &factory.CharmParams{Name: "metered", URL: "cs:quantal/metered-3"})
+	meteredCharmNew := s.Factory.MakeCharm(c, &factory.CharmParams{Name: "metered", URL: "cs:quantal/metered-5"})
+	app := s.Factory.MakeApplication(c, &factory.ApplicationParams{Charm: meteredCharm})
+	u := s.Factory.MakeUnit(c, &factory.UnitParams{
+		Application: app,
+		SetCharmURL: true,
+	})
+	client := apiclient.NewClient(s.APIState)
+	status, err := client.Status(nil)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(status, gc.NotNil)
+	unitStatus, ok := status.Applications[app.Name()].Units[u.Name()]
+	c.Assert(ok, gc.Equals, true)
+	c.Assert(unitStatus.Charm, gc.Equals, "")
+
+	err = app.SetCharm(state.SetCharmConfig{
+		Charm: meteredCharmNew,
+	})
+	c.Assert(err, jc.ErrorIsNil)
+
+	status, err = client.Status(nil)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(status, gc.NotNil)
+	unitStatus, ok = status.Applications[app.Name()].Units[u.Name()]
+	c.Assert(ok, gc.Equals, true)
+	c.Assert(unitStatus.Charm, gc.Equals, "cs:quantal/metered-3")
+}
+
+func (s *statusUnitTestSuite) TestSubordinateUpgradingFrom(c *gc.C) {
+	principalCharm := s.Factory.MakeCharm(c, &factory.CharmParams{Name: "mysql", URL: "cs:quantal/mysql"})
+	subordCharm := s.Factory.MakeCharm(c, &factory.CharmParams{Name: "logging", URL: "cs:quantal/logging-1"})
+	subordCharmNew := s.Factory.MakeCharm(c, &factory.CharmParams{Name: "logging", URL: "cs:quantal/logging-2"})
+	app := s.Factory.MakeApplication(c, &factory.ApplicationParams{
+		Charm: principalCharm,
+		Name:  "principal",
+	})
+	pu := s.Factory.MakeUnit(c, &factory.UnitParams{
+		Application: app,
+	})
+	subordApp := s.Factory.MakeApplication(c, &factory.ApplicationParams{
+		Charm: subordCharm,
+		Name:  "subord",
+	})
+
+	subEndpoint, err := subordApp.Endpoint("info")
+	c.Assert(err, jc.ErrorIsNil)
+	principalEndpoint, err := app.Endpoint("juju-info")
+	c.Assert(err, jc.ErrorIsNil)
+	rel, err := s.State.AddRelation(subEndpoint, principalEndpoint)
+	c.Assert(err, jc.ErrorIsNil)
+	ru, err := rel.Unit(pu)
+	c.Assert(err, jc.ErrorIsNil)
+	err = ru.EnterScope(nil)
+	c.Assert(err, jc.ErrorIsNil)
+	subordUnit, err := s.State.Unit("subord/0")
+	c.Assert(err, jc.ErrorIsNil)
+	err = subordUnit.SetCharmURL(subordCharm.URL())
+	c.Assert(err, jc.ErrorIsNil)
+
+	client := apiclient.NewClient(s.APIState)
+	status, err := client.Status(nil)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(status, gc.NotNil)
+	unitStatus, ok := status.Applications["principal"].Units["principal/0"].Subordinates["subord/0"]
+	c.Assert(ok, gc.Equals, true)
+	c.Assert(unitStatus.Charm, gc.Equals, "")
+
+	err = subordApp.SetCharm(state.SetCharmConfig{
+		Charm: subordCharmNew,
+	})
+	c.Assert(err, jc.ErrorIsNil)
+
+	status, err = client.Status(nil)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(status, gc.NotNil)
+	unitStatus, ok = status.Applications["principal"].Units["principal/0"].Subordinates["subord/0"]
+	c.Assert(ok, gc.Equals, true)
+	c.Assert(unitStatus.Charm, gc.Equals, "cs:quantal/logging-1")
 }
 
 func addUnitWithVersion(c *gc.C, application *state.Application, version string) *state.Unit {
@@ -471,7 +554,8 @@ func addUnitWithVersion(c *gc.C, application *state.Application, version string)
 	return unit
 }
 
-func (s *statusUnitTestSuite) checkAppVersion(c *gc.C, application *state.Application, expectedVersion string) params.ApplicationStatus {
+func (s *statusUnitTestSuite) checkAppVersion(c *gc.C, application *state.Application,
+	expectedVersion string) params.ApplicationStatus {
 	client := apiclient.NewClient(s.APIState)
 	status, err := client.Status(nil)
 	c.Assert(err, jc.ErrorIsNil)
@@ -805,7 +889,6 @@ type statusUpgradeUnitSuite struct {
 	jujutesting.JujuConnSuite
 
 	charmrevisionupdater *charmrevisionupdater.CharmRevisionUpdaterAPI
-	authoriser           apiservertesting.FakeAuthorizer
 	ctrl                 *gomock.Controller
 }
 
@@ -827,7 +910,8 @@ func (s *statusUpgradeUnitSuite) SetUpTest(c *gc.C) {
 
 	s.ctrl = gomock.NewController(c)
 	charmhubClient := mocks.NewMockCharmhubRefreshClient(s.ctrl)
-	charmhubClient.EXPECT().RefreshWithRequestMetrics(gomock.Any(), gomock.Any(), gomock.Any()).Return([]transport.RefreshResponse{
+	charmhubClient.EXPECT().RefreshWithRequestMetrics(gomock.Any(), gomock.Any(),
+		gomock.Any()).Return([]transport.RefreshResponse{
 		{Entity: transport.RefreshEntity{Revision: 42}},
 	}, nil)
 	newCharmhubClient := func(st charmrevisionupdater.State) (charmrevisionupdater.CharmhubRefreshClient, error) {
@@ -835,7 +919,8 @@ func (s *statusUpgradeUnitSuite) SetUpTest(c *gc.C) {
 	}
 
 	var err error
-	s.charmrevisionupdater, err = charmrevisionupdater.NewCharmRevisionUpdaterAPIState(state, newCharmstoreClient, newCharmhubClient)
+	s.charmrevisionupdater, err = charmrevisionupdater.NewCharmRevisionUpdaterAPIState(state, clock.WallClock,
+		newCharmstoreClient, newCharmhubClient)
 	c.Assert(err, jc.ErrorIsNil)
 }
 
@@ -850,9 +935,9 @@ func (s *statusUpgradeUnitSuite) TestUpdateRevisionsCharmstore(c *gc.C) {
 	client := apiclient.NewClient(s.APIState)
 	status, _ := client.Status(nil)
 
-	serviceStatus, ok := status.Applications["mysql"]
+	appStatus, ok := status.Applications["mysql"]
 	c.Assert(ok, gc.Equals, true)
-	c.Assert(serviceStatus.CanUpgradeTo, gc.Equals, "")
+	c.Assert(appStatus.CanUpgradeTo, gc.Equals, "")
 
 	// Update to the latest available charm revision.
 	result, err := s.charmrevisionupdater.UpdateLatestRevisions()
@@ -861,9 +946,9 @@ func (s *statusUpgradeUnitSuite) TestUpdateRevisionsCharmstore(c *gc.C) {
 
 	// Check if CanUpgradeTo suggests the latest revision.
 	status, _ = client.Status(nil)
-	serviceStatus, ok = status.Applications["mysql"]
+	appStatus, ok = status.Applications["mysql"]
 	c.Assert(ok, gc.Equals, true)
-	c.Assert(serviceStatus.CanUpgradeTo, gc.Equals, "cs:quantal/mysql-23")
+	c.Assert(appStatus.CanUpgradeTo, gc.Equals, "cs:quantal/mysql-23")
 }
 
 func (s *statusUpgradeUnitSuite) TestUpdateRevisionsCharmhub(c *gc.C) {
@@ -876,9 +961,9 @@ func (s *statusUpgradeUnitSuite) TestUpdateRevisionsCharmhub(c *gc.C) {
 	client := apiclient.NewClient(s.APIState)
 	status, _ := client.Status(nil)
 
-	serviceStatus, ok := status.Applications["charmhubby"]
+	appStatus, ok := status.Applications["charmhubby"]
 	c.Assert(ok, gc.Equals, true)
-	c.Assert(serviceStatus.CanUpgradeTo, gc.Equals, "")
+	c.Assert(appStatus.CanUpgradeTo, gc.Equals, "")
 
 	// Update to the latest available charm revision.
 	result, err := s.charmrevisionupdater.UpdateLatestRevisions()
@@ -887,9 +972,9 @@ func (s *statusUpgradeUnitSuite) TestUpdateRevisionsCharmhub(c *gc.C) {
 
 	// Check if CanUpgradeTo suggests the latest revision.
 	status, _ = client.Status(nil)
-	serviceStatus, ok = status.Applications["charmhubby"]
+	appStatus, ok = status.Applications["charmhubby"]
 	c.Assert(ok, gc.Equals, true)
-	c.Assert(serviceStatus.CanUpgradeTo, gc.Equals, "ch:charmhubby-42")
+	c.Assert(appStatus.CanUpgradeTo, gc.Equals, "ch:charmhubby-42")
 }
 
 type CAASStatusSuite struct {
@@ -913,7 +998,9 @@ func (s *CAASStatusSuite) SetUpTest(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 	s.Model = m
 
-	hp, err := s.StatePool.SystemState().APIHostPortsForClients()
+	systemState, err := s.StatePool.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
+	hp, err := systemState.APIHostPortsForClients()
 	c.Assert(err, jc.ErrorIsNil)
 	var addrs []network.SpaceAddress
 	for _, server := range hp {
@@ -1017,8 +1104,9 @@ func (s *CAASStatusSuite) assertUnitStatus(c *gc.C, appStatus params.Application
 		workloadVersion = "gitlab/latest"
 	}
 	c.Assert(appStatus, jc.DeepEquals, params.ApplicationStatus{
-		Charm:           curl.String(),
+		Charm:           *curl,
 		Series:          "kubernetes",
+		Base:            params.Base{Name: "kubernetes", Channel: "kubernetes"},
 		WorkloadVersion: workloadVersion,
 		Relations:       map[string][]string{},
 		SubordinateTo:   []string{},
@@ -1160,6 +1248,24 @@ func (s *filteringBranchesSuite) TestFullStatusBranchFilterUnit(c *gc.C) {
 	c.Assert(status.Applications, gc.HasLen, 1)
 }
 
+func (s *filteringBranchesSuite) TestFullStatusBranchFilterUnitLeader(c *gc.C) {
+	s.assertBranchAssignUnit(c, "apple", s.appA+"/0")
+	err := s.State.AddBranch("banana", "test-user")
+	c.Assert(err, jc.ErrorIsNil)
+
+	client := s.clientForTest(c)
+
+	status, err := client.FullStatus(params.StatusParams{
+		Patterns: []string{s.appA + "/leader"},
+	})
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(status.Branches, gc.HasLen, 1)
+	b, ok := status.Branches["apple"]
+	c.Assert(ok, jc.IsTrue)
+	c.Assert(b.AssignedUnits, jc.DeepEquals, map[string][]string{s.appA: {s.appA + "/0"}})
+	c.Assert(status.Applications, gc.HasLen, 1)
+}
+
 func (s *filteringBranchesSuite) TestFullStatusBranchFilterApplication(c *gc.C) {
 	err := s.State.AddBranch("apple", "test-user")
 	c.Assert(err, jc.ErrorIsNil)
@@ -1231,8 +1337,10 @@ func (s *filteringBranchesSuite) clientForTest(c *gc.C) *client.Client {
 			Tag:        s.AdminUserTag(c),
 			Controller: true,
 		},
-		Resources_:        common.NewResources(),
-		LeadershipReader_: mockLeadershipReader{},
+		Resources_: common.NewResources(),
+		LeadershipReader_: mockLeadershipReader{
+			leaders: map[string]string{s.appA: s.appA + "/0"},
+		},
 	}
 	client, err := client.NewFacade(ctx)
 	c.Assert(err, jc.ErrorIsNil)
@@ -1259,10 +1367,12 @@ func (s *filteringBranchesSuite) assertBranchAssignApplication(c *gc.C, bName, a
 	c.Assert(err, jc.ErrorIsNil)
 }
 
-type mockLeadershipReader struct{}
+type mockLeadershipReader struct {
+	leaders map[string]string
+}
 
 func (m mockLeadershipReader) Leaders() (map[string]string, error) {
-	return make(map[string]string), nil
+	return m.leaders, nil
 }
 
 func setGenerationsControllerConfig(c *gc.C, st *state.State) {

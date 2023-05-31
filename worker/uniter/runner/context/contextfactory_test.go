@@ -63,7 +63,7 @@ func (s *ContextFactorySuite) SetUpTest(c *gc.C) {
 		Unit:             s.apiUnit,
 		Tracker:          &runnertesting.FakeTracker{},
 		GetRelationInfos: s.getRelationInfos,
-		Storage:          s.storage,
+		Payloads:         s.payloads,
 		Paths:            s.paths,
 		Clock:            testclock.NewClock(time.Time{}),
 		Logger:           loggo.GetLogger("test"),
@@ -205,7 +205,6 @@ func (s *ContextFactorySuite) TestRelationHookContext(c *gc.C) {
 	s.AssertRelationContext(c, ctx, 1, "", "")
 	s.AssertNotStorageContext(c, ctx)
 	s.AssertNotWorkloadContext(c, ctx)
-	s.AssertNotSecretContext(c, ctx)
 }
 
 func (s *ContextFactorySuite) TestWorkloadHookContext(c *gc.C) {
@@ -220,7 +219,6 @@ func (s *ContextFactorySuite) TestWorkloadHookContext(c *gc.C) {
 	s.AssertNotActionContext(c, ctx)
 	s.AssertNotRelationContext(c, ctx)
 	s.AssertNotStorageContext(c, ctx)
-	s.AssertNotSecretContext(c, ctx)
 }
 
 func (s *ContextFactorySuite) TestNewHookContextWithStorage(c *gc.C) {
@@ -259,6 +257,22 @@ func (s *ContextFactorySuite) TestNewHookContextWithStorage(c *gc.C) {
 	)
 	c.Assert(err, jc.ErrorIsNil)
 
+	err = sb.CreateVolumeAttachmentPlan(machineTag, volumeTag, state.VolumeAttachmentPlanInfo{
+		DeviceType:       storage.DeviceTypeLocal,
+		DeviceAttributes: nil,
+	})
+	c.Assert(err, jc.ErrorIsNil)
+
+	err = sb.SetVolumeAttachmentPlanBlockInfo(machineTag, volumeTag, state.BlockDeviceInfo{
+		DeviceName: "sdb",
+	})
+	c.Assert(err, jc.ErrorIsNil)
+
+	err = s.machine.SetMachineBlockDevices(state.BlockDeviceInfo{
+		DeviceName: "sdb",
+	})
+	c.Assert(err, jc.ErrorIsNil)
+
 	password, err := utils.RandomPassword()
 	c.Assert(err, jc.ErrorIsNil)
 	err = unit.SetPassword(password)
@@ -275,7 +289,7 @@ func (s *ContextFactorySuite) TestNewHookContextWithStorage(c *gc.C) {
 		Unit:             apiUnit,
 		Tracker:          &runnertesting.FakeTracker{},
 		GetRelationInfos: s.getRelationInfos,
-		Storage:          s.storage,
+		Payloads:         s.payloads,
 		Paths:            s.paths,
 		Clock:            testclock.NewClock(time.Time{}),
 		Logger:           loggo.GetLogger("test"),
@@ -294,22 +308,6 @@ func (s *ContextFactorySuite) TestNewHookContextWithStorage(c *gc.C) {
 	})
 	s.AssertNotActionContext(c, ctx)
 	s.AssertNotRelationContext(c, ctx)
-	s.AssertNotSecretContext(c, ctx)
-}
-
-func (s *ContextFactorySuite) TestSecretHookContext(c *gc.C) {
-	hi := hook.Info{
-		Kind:      hooks.SecretRotate,
-		SecretURL: "secret://app/mariadb/password",
-	}
-	ctx, err := s.factory.HookContext(hi)
-	c.Assert(err, jc.ErrorIsNil)
-	s.AssertCoreContext(c, ctx)
-	s.AssertSecretContext(c, ctx, hi.SecretURL)
-	s.AssertNotWorkloadContext(c, ctx)
-	s.AssertNotActionContext(c, ctx)
-	s.AssertNotRelationContext(c, ctx)
-	s.AssertNotStorageContext(c, ctx)
 }
 
 var podSpec = `
@@ -366,7 +364,7 @@ func (s *ContextFactorySuite) setupPodSpec(c *gc.C) (*state.State, context.Conte
 			AllowClaimLeader: true,
 		},
 		GetRelationInfos: s.getRelationInfos,
-		Storage:          s.storage,
+		Payloads:         s.payloads,
 		Paths:            s.paths,
 		Clock:            testclock.NewClock(time.Time{}),
 		Logger:           loggo.GetLogger("test"),
@@ -574,7 +572,7 @@ func (s *ContextFactorySuite) TestNewHookContextCAASModel(c *gc.C) {
 			AllowClaimLeader: true,
 		},
 		GetRelationInfos: s.getRelationInfos,
-		Storage:          s.storage,
+		Payloads:         s.payloads,
 		Paths:            s.paths,
 		Clock:            testclock.NewClock(time.Time{}),
 		Logger:           loggo.GetLogger("test"),

@@ -46,6 +46,7 @@ import (
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/network"
 	corenetwork "github.com/juju/juju/core/network"
+	"github.com/juju/juju/core/network/firewall"
 	"github.com/juju/juju/core/series"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/environs"
@@ -833,7 +834,7 @@ func (s *localServerSuite) TestStartInstanceGetServerFail(c *gc.C) {
 	c.Assert(err, gc.ErrorMatches, "cannot run instance: "+
 		"request \\(.*/servers\\) returned unexpected status: "+
 		"500; error info: .*GetServer failed on purpose")
-	c.Assert(err, jc.Satisfies, environs.IsAvailabilityZoneIndependent)
+	c.Assert(errors.Is(err, environs.ErrAvailabilityZoneIndependent), jc.IsTrue)
 }
 
 func (s *localServerSuite) TestStartInstanceWaitForActiveDetails(c *gc.C) {
@@ -855,6 +856,41 @@ func (s *localServerSuite) TestStartInstanceWaitForActiveDetails(c *gc.C) {
 	insts, err := env.AllInstances(s.callCtx)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(insts, gc.HasLen, 0, gc.Commentf("expected launched instance to be terminated if stuck in BUILD state"))
+}
+
+func (s *localServerSuite) TestStartInstanceDeletesSecurityGroupsOnInstanceCreateFailure(c *gc.C) {
+	env := s.openEnviron(c, coretesting.Attrs{"firewall-mode": config.FwInstance})
+
+	// Force an error in waitForActiveServerDetails
+	cleanup := s.srv.Nova.RegisterControlPoint(
+		"server",
+		func(sc hook.ServiceControl, args ...interface{}) error {
+			return fmt.Errorf("GetServer failed on purpose")
+		},
+	)
+	defer cleanup()
+	inst, _, _, err := testing.StartInstance(env, s.callCtx, s.ControllerUUID, "100")
+	c.Check(inst, gc.IsNil)
+	c.Assert(err, gc.NotNil)
+
+	assertSecurityGroups(c, env, []string{"default"})
+}
+
+func (s *localServerSuite) TestStartInstanceDeletesSecurityGroupsOnFailure(c *gc.C) {
+	env := s.openEnviron(c, coretesting.Attrs{"firewall-mode": config.FwInstance})
+
+	s.srv.Nova.SetServerStatus(nova.StatusBuild)
+	defer s.srv.Nova.SetServerStatus("")
+
+	// Make time advance in zero time
+	clk := testclock.NewClock(time.Time{})
+	clock := testclock.AutoAdvancingClock{Clock: clk, Advance: clk.Advance}
+	env.(*openstack.Environ).SetClock(&clock)
+
+	_, _, _, err := testing.StartInstance(env, s.callCtx, s.ControllerUUID, "100")
+	c.Assert(err, gc.NotNil)
+
+	assertSecurityGroups(c, env, []string{"default"})
 }
 
 func assertSecurityGroups(c *gc.C, env environs.Environ, expected []string) {
@@ -1559,7 +1595,7 @@ func (s *localServerSuite) TestFindImageBadDefaultImage(c *gc.C) {
 
 	// An error occurs if no suitable image is found.
 	_, err := openstack.FindInstanceSpec(env, "saucy", "amd64", "mem=1G", nil)
-	c.Assert(err, gc.ErrorMatches, `no metadata for "saucy" images in some-region with arches \[amd64\]`)
+	c.Assert(err, gc.ErrorMatches, `no metadata for "saucy" images in some-region with arch amd64`)
 }
 
 func (s *localServerSuite) TestConstraintsValidator(c *gc.C) {
@@ -1677,7 +1713,7 @@ func (s *localServerSuite) TestFindImageInvalidInstanceConstraint(c *gc.C) {
 		env, jujuversion.DefaultSupportedLTS(), "amd64", "instance-type=m1.large",
 		imageMetadata,
 	)
-	c.Assert(err, gc.ErrorMatches, `no instance types in some-region matching constraints "instance-type=m1.large"`)
+	c.Assert(err, gc.ErrorMatches, `no instance types in some-region matching constraints "arch=amd64 instance-type=m1.large"`)
 }
 
 func (s *localServerSuite) TestPrecheckInstanceValidInstanceType(c *gc.C) {
@@ -2453,12 +2489,12 @@ func (s *localServerSuite) TestStartInstanceAvailZone(c *gc.C) {
 
 func (s *localServerSuite) TestStartInstanceAvailZoneUnavailable(c *gc.C) {
 	_, err := s.testStartInstanceAvailZone(c, "test-unavailable")
-	c.Assert(err, gc.Not(jc.Satisfies), environs.IsAvailabilityZoneIndependent)
+	c.Assert(errors.Is(err, environs.ErrAvailabilityZoneIndependent), jc.IsFalse)
 }
 
 func (s *localServerSuite) TestStartInstanceAvailZoneUnknown(c *gc.C) {
 	_, err := s.testStartInstanceAvailZone(c, "test-unknown")
-	c.Assert(err, gc.Not(jc.Satisfies), environs.IsAvailabilityZoneIndependent)
+	c.Assert(errors.Is(err, environs.ErrAvailabilityZoneIndependent), jc.IsFalse)
 }
 
 func (s *localServerSuite) testStartInstanceAvailZone(c *gc.C, zone string) (instances.Instance, error) {
@@ -2755,6 +2791,43 @@ func (s *localServerSuite) TestStartInstanceVolumeRootBlockDeviceSized(c *gc.C) 
 	})
 }
 
+func (s *localServerSuite) TestStartInstanceLocalRootBlockDeviceConstraint(c *gc.C) {
+	env := s.ensureAMDImages(c)
+
+	err := bootstrapEnv(c, env)
+	c.Assert(err, jc.ErrorIsNil)
+
+	cons, err := constraints.Parse("root-disk-source=local root-disk=1G arch=amd64")
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(cons.HasRootDisk(), jc.IsTrue)
+	c.Assert(*cons.RootDisk, gc.Equals, uint64(1024))
+
+	res, err := testing.StartInstanceWithParams(env, s.callCtx, "1", environs.StartInstanceParams{
+		ControllerUUID: s.ControllerUUID,
+		Constraints:    cons,
+	})
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(res, gc.NotNil)
+
+	c.Assert(res.Hardware.RootDisk, gc.NotNil)
+	// Check local disk requirements are met.
+	c.Assert(*res.Hardware.RootDisk, jc.GreaterThan, uint64(1024-1))
+
+	runOpts := res.Instance.(novaInstaceStartedWithOpts).NovaInstanceStartedWithOpts()
+	c.Assert(runOpts, gc.NotNil)
+	c.Assert(runOpts.BlockDeviceMappings, gc.NotNil)
+	deviceMapping := runOpts.BlockDeviceMappings[0]
+	c.Assert(deviceMapping, jc.DeepEquals, nova.BlockDeviceMapping{
+		BootIndex:           0,
+		UUID:                "1",
+		SourceType:          "image",
+		DestinationType:     "local",
+		DeleteOnTermination: true,
+		// VolumeSize is 0 when a local disk is used.
+		VolumeSize: 0,
+	})
+}
+
 func (s *localServerSuite) TestStartInstanceLocalRootBlockDevice(c *gc.C) {
 	env := s.ensureAMDImages(c)
 
@@ -3020,6 +3093,67 @@ func (s *localServerSuite) TestUpdateGroupController(c *gc.C) {
 		"juju-aabbccdd-eeee-ffff-0000-0123456789ab-deadbeef-0bad-400d-8000-4b1d0d06f00d",
 		"juju-aabbccdd-eeee-ffff-0000-0123456789ab-deadbeef-0bad-400d-8000-4b1d0d06f00d-0",
 	))
+}
+
+func (s *localServerSuite) TestICMPFirewallRules(c *gc.C) {
+	err := bootstrapEnv(c, s.env)
+	c.Assert(err, jc.ErrorIsNil)
+
+	inst, _ := testing.AssertStartInstance(c, s.env, s.callCtx, s.ControllerUUID, "100")
+	firewaller := openstack.GetFirewaller(s.env)
+	err = firewaller.OpenInstancePorts(s.callCtx, inst, "100", firewall.IngressRules{
+		{
+			PortRange: network.PortRange{
+				FromPort: -1,
+				ToPort:   -1,
+				Protocol: "icmp",
+			},
+			SourceCIDRs: set.NewStrings("0.0.0.0/0", "::/0"),
+		},
+	})
+	c.Assert(err, jc.ErrorIsNil)
+
+	rules, err := firewaller.InstanceIngressRules(s.callCtx, inst, "100")
+	c.Assert(err, jc.ErrorIsNil)
+
+	c.Assert(len(rules), gc.Equals, 1)
+	c.Assert(rules[0].PortRange.FromPort, gc.Equals, -1)
+	c.Assert(rules[0].PortRange.ToPort, gc.Equals, -1)
+	c.Assert(rules[0].PortRange.Protocol, gc.Equals, "icmp")
+	c.Assert(rules[0].SourceCIDRs.Size(), gc.Equals, 2)
+	c.Assert(rules[0].SourceCIDRs.Contains("0.0.0.0/0"), jc.IsTrue)
+	c.Assert(rules[0].SourceCIDRs.Contains("::/0"), jc.IsTrue)
+}
+
+// TestIPv6RuleCreationForEmptyCIDR is a regression test for lp1709312
+func (s *localServerSuite) TestIPv6RuleCreationForEmptyCIDR(c *gc.C) {
+	err := bootstrapEnv(c, s.env)
+	c.Assert(err, jc.ErrorIsNil)
+
+	inst, _ := testing.AssertStartInstance(c, s.env, s.callCtx, s.ControllerUUID, "100")
+	firewaller := openstack.GetFirewaller(s.env)
+	err = firewaller.OpenInstancePorts(s.callCtx, inst, "100", firewall.IngressRules{
+		{
+			PortRange: network.PortRange{
+				FromPort: 443,
+				ToPort:   443,
+				Protocol: "tcp",
+			},
+			SourceCIDRs: set.NewStrings(),
+		},
+	})
+	c.Assert(err, jc.ErrorIsNil)
+
+	rules, err := firewaller.InstanceIngressRules(s.callCtx, inst, "100")
+	c.Assert(err, jc.ErrorIsNil)
+
+	c.Assert(len(rules), gc.Equals, 1)
+	c.Assert(rules[0].PortRange.FromPort, gc.Equals, 443)
+	c.Assert(rules[0].PortRange.ToPort, gc.Equals, 443)
+	c.Assert(rules[0].PortRange.Protocol, gc.Equals, "tcp")
+	c.Assert(rules[0].SourceCIDRs.Size(), gc.Equals, 2)
+	c.Assert(rules[0].SourceCIDRs.Contains("0.0.0.0/0"), jc.IsTrue)
+	c.Assert(rules[0].SourceCIDRs.Contains("::/0"), jc.IsTrue)
 }
 
 func (s *localServerSuite) ensureAMDImages(c *gc.C) environs.Environ {

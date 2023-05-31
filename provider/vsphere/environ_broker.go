@@ -168,13 +168,17 @@ func (env *sessionEnviron) newRawInstance(
 		statusUpdateArgs: statusUpdateArgs,
 	}
 
-	vmTemplate, arch, err := tplManager.EnsureTemplate(env.ctx, args.InstanceConfig.Series, args.Tools.Arches())
+	arch, err := args.Tools.OneArch()
 	if err != nil {
-		return nil, nil, common.ZoneIndependentError(err)
+		return nil, nil, errors.Trace(err)
+	}
+	vmTemplate, arch, err := tplManager.EnsureTemplate(env.ctx, args.InstanceConfig.Series, arch)
+	if err != nil {
+		return nil, nil, environs.ZoneIndependentError(err)
 	}
 
 	if err := env.finishMachineConfig(args, arch); err != nil {
-		return nil, nil, common.ZoneIndependentError(err)
+		return nil, nil, environs.ZoneIndependentError(err)
 	}
 
 	if args.AvailabilityZone == "" {
@@ -183,12 +187,12 @@ func (env *sessionEnviron) newRawInstance(
 
 	vmName, err := env.namespace.Hostname(args.InstanceConfig.MachineId)
 	if err != nil {
-		return nil, nil, common.ZoneIndependentError(err)
+		return nil, nil, environs.ZoneIndependentError(err)
 	}
 
 	cloudcfg, err := cloudinit.New(args.InstanceConfig.Series)
 	if err != nil {
-		return nil, nil, common.ZoneIndependentError(err)
+		return nil, nil, environs.ZoneIndependentError(err)
 	}
 	cloudcfg.AddPackage("open-vm-tools")
 	cloudcfg.AddPackage("iptables-persistent")
@@ -235,7 +239,7 @@ func (env *sessionEnviron) newRawInstance(
 	}
 	userData, err := providerinit.ComposeUserData(args.InstanceConfig, cloudcfg, VsphereRenderer{})
 	if err != nil {
-		return nil, nil, common.ZoneIndependentError(
+		return nil, nil, environs.ZoneIndependentError(
 			errors.Annotate(err, "cannot make user data"),
 		)
 	}
@@ -263,7 +267,7 @@ func (env *sessionEnviron) newRawInstance(
 	if vsphereclient.IsExtendDiskError(err) {
 		// Ensure we don't try to make the same extension across
 		// different resource groups.
-		err = common.ZoneIndependentError(err)
+		err = environs.ZoneIndependentError(err)
 	}
 	if err != nil {
 		HandleCredentialError(err, env, ctx)

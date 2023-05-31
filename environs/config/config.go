@@ -275,6 +275,8 @@ const (
 	// The lack of a mode means it will default into compatibility mode.
 	//
 	//  - strict mode ensures that we handle any fallbacks as errors.
+	//  - requires-prompts mode has no effect and is only supported for
+	//    forwards compatibility
 	ModeKey = "mode"
 
 	//
@@ -297,6 +299,10 @@ const (
 	// LoggingOutputKey is a key for determining the destination of output for
 	// logging.
 	LoggingOutputKey = "logging-output"
+
+	// DefaultSeriesKey is a key for determining the series a model should
+	// explicitly use for charms unless otherwise provided.
+	DefaultSeriesKey = "default-series"
 )
 
 // ParseHarvestMode parses description of harvesting method and
@@ -416,8 +422,8 @@ const (
 // "ca-cert" and "ca-private-key" values.  If not specified, CA details
 // will be read from:
 //
-//     ~/.local/share/juju/<name>-cert.pem
-//     ~/.local/share/juju/<name>-private-key.pem
+//	~/.local/share/juju/<name>-cert.pem
+//	~/.local/share/juju/<name>-private-key.pem
 //
 // if $XDG_DATA_HOME is defined it will be used instead of ~/.local/share
 func New(withDefaults Defaulting, attrs map[string]interface{}) (*Config, error) {
@@ -468,6 +474,9 @@ const (
 
 	// DefaultActionResultsSize is the default size of the action results.
 	DefaultActionResultsSize = "5G"
+
+	// DefaultLxdSnapChannel is the default lxd snap channel to install on host vms.
+	DefaultLxdSnapChannel = "5.0/stable"
 )
 
 var defaultConfigValues = map[string]interface{}{
@@ -498,7 +507,7 @@ var defaultConfigValues = map[string]interface{}{
 	NetBondReconfigureDelayKey: 17,
 	ContainerNetworkingMethod:  "",
 
-	"default-series":                jujuversion.DefaultSupportedLTS(),
+	DefaultSeriesKey:                "",
 	ProvisionerHarvestModeKey:       HarvestDestroyed.String(),
 	NumProvisionWorkersKey:          16,
 	NumContainerProvisionWorkersKey: 4,
@@ -518,7 +527,7 @@ var defaultConfigValues = map[string]interface{}{
 	CloudInitUserDataKey:            "",
 	ContainerInheritPropertiesKey:   "",
 	BackupDirKey:                    "",
-	LXDSnapChannel:                  "latest/stable",
+	LXDSnapChannel:                  DefaultLxdSnapChannel,
 
 	CharmHubURLKey: charmhub.CharmHubServerURL,
 
@@ -935,10 +944,10 @@ func (c *Config) DefaultSpace() string {
 	return c.asString(DefaultSpace)
 }
 
-// DefaultSeries returns the configured default Ubuntu series for the model,
+// DefaultSeriesKey returns the configured default Ubuntu series for the model,
 // and whether the default series was explicitly configured on the environment.
 func (c *Config) DefaultSeries() (string, bool) {
-	s, ok := c.defined["default-series"]
+	s, ok := c.defined[DefaultSeriesKey]
 	if !ok {
 		return "", false
 	}
@@ -1397,8 +1406,9 @@ func (c *Config) validateCharmHubURL() error {
 }
 
 // Mode returns the mode type for the configuration.
-// Only two modes exist at the moment (strict or ""). Empty string
-// implies compatible mode.
+// Only three modes are supported at the moment (requires-prompts, strict or "").
+// Empty string implies compatible mode.
+// "requires-prompts" has no effect and is only supported for forwards compatibility.
 func (c *Config) Mode() ([]string, bool) {
 	modes, ok := c.defined[ModeKey]
 	if !ok {
@@ -1425,6 +1435,7 @@ func (c *Config) validateMode() error {
 	for _, mode := range modes {
 		switch strings.TrimSpace(mode) {
 		case "strict":
+		case "requires-prompts":
 		default:
 			return errors.NotValidf("mode %q", mode)
 		}
@@ -1725,7 +1736,7 @@ var alwaysOptional = schema.Defaults{
 	AgentMetadataURLKey:             schema.Omit,
 	ContainerImageStreamKey:         schema.Omit,
 	ContainerImageMetadataURLKey:    schema.Omit,
-	"default-series":                schema.Omit,
+	DefaultSeriesKey:                schema.Omit,
 	"development":                   schema.Omit,
 	"ssl-hostname-verification":     schema.Omit,
 	"proxy-ssh":                     schema.Omit,
@@ -1957,8 +1968,8 @@ var configSchema = environschema.Fields{
 		Type:        environschema.Tstring,
 		Group:       environschema.EnvironGroup,
 	},
-	"default-series": {
-		Description: "The default series of Ubuntu to use for deploying charms",
+	DefaultSeriesKey: {
+		Description: "The default series of Ubuntu to use for deploying charms, will act like --series when deploying charms",
 		Type:        environschema.Tstring,
 		Group:       environschema.EnvironGroup,
 	},
@@ -2113,7 +2124,7 @@ global or per instance security groups.`,
 	},
 	ProvisionerHarvestModeKey: {
 		// default: destroyed, but also depends on current setting of ProvisionerSafeModeKey
-		Description: "What to do with unknown machines. See https://jujucharms.com/stable/config-general#juju-lifecycle-and-harvesting (default destroyed)",
+		Description: "What to do with unknown machines (default destroyed)",
 		Type:        environschema.Tstring,
 		Values:      []interface{}{"all", "none", "unknown", "destroyed"},
 		Group:       environschema.EnvironGroup,

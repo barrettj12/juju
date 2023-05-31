@@ -5,12 +5,14 @@ package modelmanager_test
 
 import (
 	"github.com/golang/mock/gomock"
-	jujuversion "github.com/juju/juju/version"
 	"github.com/juju/names/v4"
 	jujutesting "github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/v3"
 	gc "gopkg.in/check.v1"
+
+	"github.com/juju/juju/apiserver/common"
+	jujuversion "github.com/juju/juju/version"
 
 	"github.com/juju/juju/apiserver/facades/client/modelmanager"
 	"github.com/juju/juju/apiserver/facades/client/modelmanager/mocks"
@@ -56,7 +58,10 @@ func (s *ValidateModelUpgradesSuite) TestValidateModelUpgradesWithNoModelTags(c 
 
 	statePool := mocks.NewMockStatePool(ctrl)
 
-	api, err := modelmanager.NewModelManagerAPI(s.st, &mockState{}, statePool, nil, nil, s.authoriser, s.st.model, s.callContext)
+	api, err := modelmanager.NewModelManagerAPI(
+		s.st, &mockState{}, statePool, nil, nil, common.NewBlockChecker(s.st),
+		s.authoriser, s.st.model, s.callContext,
+	)
 	c.Assert(err, jc.ErrorIsNil)
 
 	results, err := api.ValidateModelUpgrades(params.ValidateModelUpgradeParams{})
@@ -70,11 +75,14 @@ func (s *ValidateModelUpgradesSuite) TestValidateModelUpgradesWithInvalidModelTa
 
 	statePool := mocks.NewMockStatePool(ctrl)
 
-	api, err := modelmanager.NewModelManagerAPI(s.st, &mockState{}, statePool, nil, nil, s.authoriser, s.st.model, s.callContext)
+	api, err := modelmanager.NewModelManagerAPI(
+		s.st, &mockState{}, statePool, nil, nil, common.NewBlockChecker(s.st),
+		s.authoriser, s.st.model, s.callContext,
+	)
 	c.Assert(err, jc.ErrorIsNil)
 
 	results, err := api.ValidateModelUpgrades(params.ValidateModelUpgradeParams{
-		Models: []params.ValidateModelUpgradeParam{{
+		Models: []params.ModelParam{{
 			ModelTag: "!!!",
 		}},
 	})
@@ -92,11 +100,14 @@ func (s *ValidateModelUpgradesSuite) TestValidateModelUpgradesWithModelWithNoPer
 		Tag: names.NewUserTag("user"),
 	}
 
-	api, err := modelmanager.NewModelManagerAPI(s.st, &mockState{}, statePool, nil, nil, authoriser, s.st.model, s.callContext)
+	api, err := modelmanager.NewModelManagerAPI(
+		s.st, &mockState{}, statePool, nil, nil, common.NewBlockChecker(s.st),
+		authoriser, s.st.model, s.callContext,
+	)
 	c.Assert(err, jc.ErrorIsNil)
 
 	results, err := api.ValidateModelUpgrades(params.ValidateModelUpgradeParams{
-		Models: []params.ValidateModelUpgradeParam{{
+		Models: []params.ModelParam{{
 			ModelTag: s.st.model.tag.String(),
 		}},
 	})
@@ -119,11 +130,14 @@ func (s *ValidateModelUpgradesSuite) TestValidateModelUpgradesForControllerModel
 	statePool := mocks.NewMockStatePool(ctrl)
 	statePool.EXPECT().Get(s.st.model.tag.Id()).Return(state, nil)
 
-	api, err := modelmanager.NewModelManagerAPI(s.st, &mockState{}, statePool, nil, nil, s.authoriser, s.st.model, s.callContext)
+	api, err := modelmanager.NewModelManagerAPI(
+		s.st, &mockState{}, statePool, nil, nil, common.NewBlockChecker(s.st),
+		s.authoriser, s.st.model, s.callContext,
+	)
 	c.Assert(err, jc.ErrorIsNil)
 
 	results, err := api.ValidateModelUpgrades(params.ValidateModelUpgradeParams{
-		Models: []params.ValidateModelUpgradeParam{{
+		Models: []params.ModelParam{{
 			ModelTag: s.st.model.tag.String(),
 		}},
 	})
@@ -147,11 +161,14 @@ func (s *ValidateModelUpgradesSuite) TestValidateModelUpgradesForNonControllerMo
 	statePool := mocks.NewMockStatePool(ctrl)
 	statePool.EXPECT().Get(s.st.model.tag.Id()).Return(state, nil)
 
-	api, err := modelmanager.NewModelManagerAPI(s.st, &mockState{}, statePool, nil, nil, s.authoriser, s.st.model, s.callContext)
+	api, err := modelmanager.NewModelManagerAPI(
+		s.st, &mockState{}, statePool, nil, nil, common.NewBlockChecker(s.st),
+		s.authoriser, s.st.model, s.callContext,
+	)
 	c.Assert(err, jc.ErrorIsNil)
 
 	results, err := api.ValidateModelUpgrades(params.ValidateModelUpgradeParams{
-		Models: []params.ValidateModelUpgradeParam{{
+		Models: []params.ModelParam{{
 			ModelTag: s.st.model.tag.String(),
 		}},
 	})
@@ -175,11 +192,14 @@ func (s *ValidateModelUpgradesSuite) TestValidateModelUpgradesForUpgradingMachin
 	statePool := mocks.NewMockStatePool(ctrl)
 	statePool.EXPECT().Get(s.st.model.tag.Id()).Return(state, nil)
 
-	api, err := modelmanager.NewModelManagerAPI(s.st, &mockState{}, statePool, nil, nil, s.authoriser, s.st.model, s.callContext)
+	api, err := modelmanager.NewModelManagerAPI(
+		s.st, &mockState{}, statePool, nil, nil, common.NewBlockChecker(s.st),
+		s.authoriser, s.st.model, s.callContext,
+	)
 	c.Assert(err, jc.ErrorIsNil)
 
 	results, err := api.ValidateModelUpgrades(params.ValidateModelUpgradeParams{
-		Models: []params.ValidateModelUpgradeParam{{
+		Models: []params.ModelParam{{
 			ModelTag: s.st.model.tag.String(),
 		}},
 	})
@@ -203,11 +223,14 @@ func (s *ValidateModelUpgradesSuite) TestValidateModelUpgradesForUpgradingMachin
 	statePool := mocks.NewMockStatePool(ctrl)
 	statePool.EXPECT().Get(s.st.model.tag.Id()).Return(state, nil)
 
-	api, err := modelmanager.NewModelManagerAPI(s.st, &mockState{}, statePool, nil, nil, s.authoriser, s.st.model, s.callContext)
+	api, err := modelmanager.NewModelManagerAPI(
+		s.st, &mockState{}, statePool, nil, nil, common.NewBlockChecker(s.st),
+		s.authoriser, s.st.model, s.callContext,
+	)
 	c.Assert(err, jc.ErrorIsNil)
 
 	results, err := api.ValidateModelUpgrades(params.ValidateModelUpgradeParams{
-		Models: []params.ValidateModelUpgradeParam{{
+		Models: []params.ModelParam{{
 			ModelTag: s.st.model.tag.String(),
 		}},
 		Force: true,

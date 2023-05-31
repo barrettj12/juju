@@ -8,8 +8,11 @@ import (
 
 	"github.com/juju/cmd/v3"
 	"github.com/juju/errors"
+	"github.com/juju/gnuflag"
 	"github.com/juju/names/v4"
 
+	apiclient "github.com/juju/juju/api/client/client"
+	"github.com/juju/juju/api/client/machinemanager"
 	jujucmd "github.com/juju/juju/cmd"
 	"github.com/juju/juju/cmd/juju/block"
 	"github.com/juju/juju/cmd/modelcmd"
@@ -27,13 +30,15 @@ type retryProvisioningCommand struct {
 	modelcmd.IAASOnlyCommand
 	Machines []names.MachineTag
 	api      RetryProvisioningAPI
+
+	all bool
 }
 
 // RetryProvisioningAPI defines methods on the client API
 // that the retry-provisioning command calls.
 type RetryProvisioningAPI interface {
 	Close() error
-	RetryProvisioning(machines ...names.MachineTag) ([]params.ErrorResult, error)
+	RetryProvisioning(all bool, machines ...names.MachineTag) ([]params.ErrorResult, error)
 }
 
 func (c *retryProvisioningCommand) Info() *cmd.Info {
@@ -44,9 +49,16 @@ func (c *retryProvisioningCommand) Info() *cmd.Info {
 	})
 }
 
+func (c *retryProvisioningCommand) SetFlags(f *gnuflag.FlagSet) {
+	f.BoolVar(&c.all, "all", false, "retry provisioning all failed machines")
+}
+
 func (c *retryProvisioningCommand) Init(args []string) error {
-	if len(args) == 0 {
+	if !c.all && len(args) == 0 {
 		return errors.Errorf("no machine specified")
+	}
+	if c.all && len(args) > 0 {
+		return errors.Errorf("specify machines or --all but not both")
 	}
 	c.Machines = make([]names.MachineTag, len(args))
 	for i, arg := range args {
@@ -65,7 +77,18 @@ func (c *retryProvisioningCommand) getAPI() (RetryProvisioningAPI, error) {
 	if c.api != nil {
 		return c.api, nil
 	}
-	return c.NewAPIClient()
+	root, err := c.NewAPIRoot()
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	client := machinemanager.NewClient(root)
+	if client.BestAPIVersion() > 6 {
+		return client, nil
+	}
+	if c.all {
+		return nil, errors.New("this version of Juju does not support --all")
+	}
+	return apiclient.NewClient(root), nil
 }
 
 func (c *retryProvisioningCommand) Run(context *cmd.Context) error {
@@ -75,7 +98,7 @@ func (c *retryProvisioningCommand) Run(context *cmd.Context) error {
 	}
 	defer client.Close()
 
-	results, err := client.RetryProvisioning(c.Machines...)
+	results, err := client.RetryProvisioning(c.all, c.Machines...)
 	if err != nil {
 		return block.ProcessBlockedError(err, block.BlockChange)
 	}

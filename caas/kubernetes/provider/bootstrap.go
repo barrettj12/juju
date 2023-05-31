@@ -31,6 +31,7 @@ import (
 	"github.com/juju/juju/agent"
 	agenttools "github.com/juju/juju/agent/tools"
 	"github.com/juju/juju/caas"
+	k8sapplication "github.com/juju/juju/caas/kubernetes/provider/application"
 	"github.com/juju/juju/caas/kubernetes/provider/constants"
 	k8sproxy "github.com/juju/juju/caas/kubernetes/provider/proxy"
 	"github.com/juju/juju/caas/kubernetes/provider/resources"
@@ -300,7 +301,7 @@ func newcontrollerStack(
 
 	cs.pvcNameControllerPodStorage = "storage"
 
-	if cs.dockerAuthSecretData, err = pcfg.Controller.Config.CAASImageRepo().SecretData(); err != nil {
+	if cs.dockerAuthSecretData, err = pcfg.Controller.CAASImageRepo().SecretData(); err != nil {
 		return nil, errors.Trace(err)
 	}
 	return cs, nil
@@ -894,7 +895,8 @@ func (c *controllerStack) createControllerStatefulset() error {
 		return errors.Trace(err)
 	}
 
-	if err := processConstraints(&spec.Spec.Template.Spec, c.stackName, c.pcfg.Bootstrap.BootstrapMachineConstraints); err != nil {
+	if err := k8sapplication.ApplyConstraints(
+		&spec.Spec.Template.Spec, c.stackName, c.pcfg.Bootstrap.BootstrapMachineConstraints, k8sapplication.ConfigureConstraint); err != nil {
 		return errors.Trace(err)
 	}
 
@@ -1159,7 +1161,7 @@ func (c *controllerStack) buildStorageSpecForController(statefulset *apps.Statef
 
 func (c *controllerStack) buildContainerSpecForController(statefulset *apps.StatefulSet) error {
 	var wiredTigerCacheSize float32
-	if c.pcfg.Controller.Config.MongoMemoryProfile() == string(mongo.MemoryProfileLow) {
+	if c.pcfg.Controller.MongoMemoryProfile() == string(mongo.MemoryProfileLow) {
 		wiredTigerCacheSize = mongo.Mongo34LowCacheSize
 	}
 	generateContainerSpecs := func(jujudCmd string) ([]core.Container, error) {

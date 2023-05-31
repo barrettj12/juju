@@ -13,6 +13,7 @@ import (
 	"github.com/juju/juju/apiserver/facade"
 	"github.com/juju/juju/controller"
 	"github.com/juju/juju/core/permission"
+	"github.com/juju/juju/core/series"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/rpc/params"
 	"github.com/juju/juju/state"
@@ -50,6 +51,21 @@ type APIv2 struct {
 	*API
 }
 
+// APIv3 serves backup-specific API methods for version 3.
+type APIv3 struct {
+	*APIv2
+}
+
+// NewAPIv3 returns a v3 api facade.
+func NewAPIv3(backend Backend, resources facade.Resources, authorizer facade.Authorizer) (*APIv3, error) {
+	api, err := NewAPIv2(backend, resources, authorizer)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	return &APIv3{api}, nil
+}
+
+// NewAPIv2 returns a v2 api facade.
 func NewAPIv2(backend Backend, resources facade.Resources, authorizer facade.Authorizer) (*APIv2, error) {
 	api, err := NewAPI(backend, resources, authorizer)
 	if err != nil {
@@ -92,8 +108,7 @@ func NewAPI(backend Backend, resources facade.Resources, authorizer facade.Autho
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
-	backupDir := modelConfig.BackupDir()
-
+	backupDir := backups.BackupDirToUse(modelConfig.BackupDir())
 	paths := backups.Paths{
 		BackupDir: backupDir,
 		DataDir:   dataDir,
@@ -152,21 +167,15 @@ func CreateResult(meta *backups.Metadata, filename string) params.BackupsMetadat
 	result.Machine = meta.Origin.Machine
 	result.Hostname = meta.Origin.Hostname
 	result.Version = meta.Origin.Version
+	base, _ := series.GetBaseFromSeries(meta.Origin.Series)
 	result.Series = meta.Origin.Series
+	result.Base = base.String()
 
 	result.ControllerUUID = meta.Controller.UUID
 	result.FormatVersion = meta.FormatVersion
 	result.HANodes = meta.Controller.HANodes
 	result.ControllerMachineID = meta.Controller.MachineID
 	result.ControllerMachineInstanceID = meta.Controller.MachineInstanceID
-	// TODO(wallyworld) - remove these ASAP
-	// These are only used by the restore CLI when re-bootstrapping.
-	// We will use a better solution but the way restore currently
-	// works, we need them and they are no longer available via
-	// bootstrap config. We will need to fix how re-bootstrap deals
-	// with these keys to address the issue.
-	result.CACert = meta.CACert
-	result.CAPrivateKey = meta.CAPrivateKey
 	result.Filename = filename
 
 	return result

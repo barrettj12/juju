@@ -5,8 +5,8 @@ package state_test
 
 import (
 	"github.com/juju/clock"
+	mgotesting "github.com/juju/mgo/v2/testing"
 	"github.com/juju/names/v4"
-	gitjujutesting "github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
 
@@ -26,7 +26,7 @@ import (
 )
 
 type InitializeSuite struct {
-	gitjujutesting.MgoSuite
+	mgotesting.MgoSuite
 	testing.BaseSuite
 	Pool  *state.StatePool
 	State *state.State
@@ -58,7 +58,8 @@ func (s *InitializeSuite) openState(c *gc.C, modelTag names.ModelTag) {
 		MongoSession:       s.Session,
 	})
 	c.Assert(err, jc.ErrorIsNil)
-	st := pool.SystemState()
+	st, err := pool.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
 	s.Pool = pool
 	s.State = st
 
@@ -147,7 +148,8 @@ func (s *InitializeSuite) TestInitialize(c *gc.C) {
 	})
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(ctlr, gc.NotNil)
-	st := ctlr.SystemState()
+	st, err := ctlr.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
 	m, err := st.Model()
 	c.Assert(err, jc.ErrorIsNil)
 	modelTag := m.ModelTag()
@@ -285,7 +287,7 @@ func (s *InitializeSuite) TestInitializeWithControllerInheritedConfig(c *gc.C) {
 	uuid := cfg.UUID()
 	initial := cfg.AllAttrs()
 	controllerInheritedConfigIn := map[string]interface{}{
-		"default-series": initial["default-series"],
+		"charmhub-url": initial["charmhub-url"],
 	}
 	owner := names.NewLocalUserTag("initialize-admin")
 	controllerCfg := testing.FakeControllerConfig()
@@ -311,7 +313,8 @@ func (s *InitializeSuite) TestInitializeWithControllerInheritedConfig(c *gc.C) {
 	})
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(ctlr, gc.NotNil)
-	st := ctlr.SystemState()
+	st, err := ctlr.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
 	m, err := st.Model()
 	c.Assert(err, jc.ErrorIsNil)
 	modelTag := m.ModelTag()
@@ -427,7 +430,9 @@ func (s *InitializeSuite) testBadModelConfig(c *gc.C, update map[string]interfac
 	args.ControllerModelArgs.Config = good
 	ctlr, err := state.Initialize(args)
 	c.Assert(err, jc.ErrorIsNil)
-	modelUUID := ctlr.SystemState().ModelUUID()
+	sysState, err := ctlr.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
+	modelUUID := sysState.ModelUUID()
 	ctlr.Close()
 
 	s.openState(c, names.NewModelTag(modelUUID))
@@ -521,7 +526,8 @@ func (s *InitializeSuite) TestInitializeWithCloudRegionConfig(c *gc.C) {
 	})
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(ctlr, gc.NotNil)
-	st := ctlr.SystemState()
+	st, err := ctlr.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
 	m, err := st.Model()
 	c.Assert(err, jc.ErrorIsNil)
 	modelTag := m.ModelTag()
@@ -585,7 +591,9 @@ func (s *InitializeSuite) TestInitializeWithCloudRegionMisses(c *gc.C) {
 	})
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(ctlr, gc.NotNil)
-	m, err := ctlr.SystemState().Model()
+	sysState, err := ctlr.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
+	m, err := sysState.Model()
 	c.Assert(err, jc.ErrorIsNil)
 	modelTag := m.ModelTag()
 	c.Assert(modelTag.Id(), gc.Equals, uuid)
@@ -643,7 +651,9 @@ func (s *InitializeSuite) TestInitializeWithCloudRegionHits(c *gc.C) {
 	})
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(ctlr, gc.NotNil)
-	m, err := ctlr.SystemState().Model()
+	sysState, err := ctlr.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
+	m, err := sysState.Model()
 	c.Assert(err, jc.ErrorIsNil)
 	modelTag := m.ModelTag()
 	c.Assert(modelTag.Id(), gc.Equals, uuid)
@@ -707,7 +717,9 @@ func (s *InitializeSuite) TestInitializeWithStoragePool(c *gc.C) {
 	})
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(ctlr, gc.NotNil)
-	m, err := ctlr.SystemState().Model()
+	sysState, err := ctlr.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
+	m, err := sysState.Model()
 	c.Assert(err, jc.ErrorIsNil)
 	modelTag := m.ModelTag()
 	c.Assert(modelTag.Id(), gc.Equals, uuid)

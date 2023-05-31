@@ -94,7 +94,8 @@ func virtType(info types.InstanceTypeInfo) *string {
 // list at the time of writing.
 //
 // See:
-//     http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-vpc.html#vpc-only-instance-types
+//
+//	http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-vpc.html#vpc-only-instance-types
 func supportsClassic(instanceType string) bool {
 	classicTypes := set.NewStrings(
 		"c1", "c3",
@@ -118,10 +119,9 @@ func supportsClassic(instanceType string) bool {
 }
 
 var archNames = map[types.ArchitectureType]string{
-	"x86":     arch.I386,
-	"x86_64":  arch.AMD64,
-	"arm":     arch.ARM,
-	"aarch64": arch.ARM64,
+	types.ArchitectureTypeI386:  arch.I386,
+	types.ArchitectureTypeX8664: arch.AMD64,
+	types.ArchitectureTypeArm64: arch.ARM64,
 }
 
 func archName(in types.ArchitectureType) string {
@@ -301,7 +301,12 @@ func convertEC2InstanceType(
 			if instArch == "" {
 				continue
 			}
-			instType.Arches = append(instType.Arches, archName(instArch))
+			// We no longer support i386
+			if instArch == arch.I386 {
+				continue
+			}
+			instType.Arch = archName(instArch)
+			break
 		}
 	}
 	instZones, ok := instanceTypeZones[types.InstanceType(instType.Name)]

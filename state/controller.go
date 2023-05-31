@@ -53,7 +53,7 @@ func (ctlr *Controller) StatePool() *StatePool {
 }
 
 // SystemState returns the State object for the controller model.
-func (ctlr *Controller) SystemState() *State {
+func (ctlr *Controller) SystemState() (*State, error) {
 	return ctlr.pool.SystemState()
 }
 
@@ -74,10 +74,11 @@ func (ctlr *Controller) GetState(modelTag names.ModelTag) (*PooledState, error) 
 // Ping probes the Controllers's database connection to ensure that it
 // is still alive.
 func (ctlr *Controller) Ping() error {
-	if ctlr.pool.SystemState() == nil {
-		return errors.New("pool is closed")
+	systemState, err := ctlr.pool.SystemState()
+	if err != nil {
+		return errors.Trace(err)
 	}
-	return ctlr.pool.SystemState().Ping()
+	return systemState.Ping()
 }
 
 // ControllerConfig returns the config values for the controller.
@@ -97,6 +98,20 @@ func (st *State) ControllerConfig() (jujucontroller.Config, error) {
 func (st *State) UpdateControllerConfig(updateAttrs map[string]interface{}, removeAttrs []string) error {
 	if err := st.checkValidControllerConfig(updateAttrs, removeAttrs); err != nil {
 		return errors.Trace(err)
+	}
+
+	fields, _, err := jujucontroller.ConfigSchema.ValidationSchema()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	for k := range updateAttrs {
+		if field, ok := fields[k]; ok {
+			v, err := field.Coerce(updateAttrs[k], []string{k})
+			if err != nil {
+				return err
+			}
+			updateAttrs[k] = v
+		}
 	}
 
 	settings, err := readSettings(st.db(), controllersC, ControllerSettingsGlobalKey)

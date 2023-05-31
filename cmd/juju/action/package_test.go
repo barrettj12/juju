@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juju/cmd/v3"
 	"github.com/juju/cmd/v3/cmdtesting"
 	"github.com/juju/errors"
 	jujutesting "github.com/juju/testing"
@@ -43,7 +42,6 @@ func TestPackage(t *testing.T) {
 
 type BaseActionSuite struct {
 	coretesting.FakeJujuXDGDataHomeSuite
-	command cmd.Command
 
 	modelFlags []string
 	store      *jujuclient.MemStore
@@ -178,13 +176,15 @@ func (c *fakeAPIClient) Enqueue(actions []actionapi.Action) ([]actionapi.ActionR
 
 func (c *fakeAPIClient) EnqueueOperation(args []actionapi.Action) (actionapi.EnqueuedActions, error) {
 	c.enqueuedActions = args
-	actions := make([]actionapi.ActionReference, len(c.actionResults))
+	actions := make([]actionapi.ActionResult, len(c.actionResults))
 	for i, a := range c.actionResults {
-		actions[i] = actionapi.ActionReference{
+		actions[i] = actionapi.ActionResult{
 			Error: a.Error,
 		}
 		if a.Action != nil {
-			actions[i].ID = a.Action.ID
+			actions[i].Action = &actionapi.Action{
+				ID: a.Action.ID,
+			}
 		}
 	}
 	return actionapi.EnqueuedActions{

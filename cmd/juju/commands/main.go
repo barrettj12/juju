@@ -33,21 +33,19 @@ import (
 	"github.com/juju/juju/cmd/juju/machine"
 	"github.com/juju/juju/cmd/juju/metricsdebug"
 	"github.com/juju/juju/cmd/juju/model"
+	"github.com/juju/juju/cmd/juju/payload"
 	"github.com/juju/juju/cmd/juju/resource"
 	rcmd "github.com/juju/juju/cmd/juju/romulus/commands"
-	"github.com/juju/juju/cmd/juju/secrets"
 	"github.com/juju/juju/cmd/juju/setmeterstatus"
 	"github.com/juju/juju/cmd/juju/space"
 	"github.com/juju/juju/cmd/juju/status"
 	"github.com/juju/juju/cmd/juju/storage"
 	"github.com/juju/juju/cmd/juju/subnet"
 	"github.com/juju/juju/cmd/juju/user"
-	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/feature"
 	"github.com/juju/juju/juju"
 	"github.com/juju/juju/juju/osenv"
 	"github.com/juju/juju/jujuclient"
-	"github.com/juju/juju/resource/resourceadapters"
 	"github.com/juju/juju/utils/proxy"
 	jujuversion "github.com/juju/juju/version"
 )
@@ -386,7 +384,7 @@ func registerCommands(r commandRegistry) {
 	// Configuration commands.
 	r.Register(model.NewModelGetConstraintsCommand())
 	r.Register(model.NewModelSetConstraintsCommand())
-	r.Register(newSyncToolsCommand())
+	r.Register(newSyncAgentBinaryCommand())
 	r.Register(newUpgradeJujuCommand())
 	r.Register(newUpgradeControllerCommand())
 	r.Register(application.NewRefreshCommand())
@@ -515,7 +513,6 @@ func registerCommands(r commandRegistry) {
 	r.Register(space.NewRenameCommand())
 
 	// Manage subnets
-	r.Register(subnet.NewAddCommand())
 	r.Register(subnet.NewListCommand())
 
 	// Manage controllers
@@ -567,25 +564,9 @@ func registerCommands(r commandRegistry) {
 	r.Register(gui.NewGUICommand())
 	r.Register(gui.NewUpgradeGUICommand())
 
-	// Resource commands
-	r.Register(resource.NewUploadCommand(resource.UploadDeps{
-		NewClient: func(c *resource.UploadCommand) (resource.UploadClient, error) {
-			apiRoot, err := c.NewAPIRoot()
-			if err != nil {
-				return nil, errors.Trace(err)
-			}
-			return resourceadapters.NewAPIClient(apiRoot)
-		},
-	}))
-	r.Register(resource.NewListCommand(resource.ListDeps{
-		NewClient: func(c *resource.ListCommand) (resource.ListClient, error) {
-			apiRoot, err := c.NewAPIRoot()
-			if err != nil {
-				return nil, errors.Trace(err)
-			}
-			return resourceadapters.NewAPIClient(apiRoot)
-		},
-	}))
+	// Resource commands.
+	r.Register(resource.NewUploadCommand())
+	r.Register(resource.NewListCommand())
 	r.Register(resource.NewCharmResourcesCommand())
 
 	// CharmHub related commands
@@ -593,20 +574,9 @@ func registerCommands(r commandRegistry) {
 	r.Register(charmhub.NewFindCommand())
 	r.Register(charmhub.NewDownloadCommand())
 
-	// Secrets.
-	if featureflag.Enabled(feature.Secrets) {
-		r.Register(secrets.NewListSecretsCommand())
-	}
+	// Payload commands.
+	r.Register(payload.NewListCommand())
 
-	// Commands registered elsewhere.
-	for _, newCommand := range registeredCommands {
-		command := newCommand()
-		r.Register(command)
-	}
-	for _, newCommand := range registeredEnvCommands {
-		command := newCommand()
-		r.Register(modelcmd.Wrap(command))
-	}
 	rcmd.RegisterAll(r)
 }
 

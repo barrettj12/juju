@@ -5,7 +5,6 @@ package operation
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/juju/charm/v8/hooks"
 	"github.com/juju/errors"
@@ -50,8 +49,6 @@ func (rh *runHook) String() string {
 		}
 	case rh.info.Kind.IsStorage():
 		suffix = fmt.Sprintf(" (%s)", rh.info.StorageId)
-	case rh.info.Kind.IsSecret():
-		suffix = fmt.Sprintf(" (%s)", rh.info.SecretURL)
 	}
 	return fmt.Sprintf("run %s%s hook", rh.info.Kind, suffix)
 }
@@ -69,7 +66,7 @@ func (rh *runHook) Prepare(state State) (*State, error) {
 	}
 
 	switch hooks.Kind(name) {
-	case hooks.LeaderElected, hooks.SecretRotate:
+	case hooks.LeaderElected:
 		// Check if leadership has changed between queueing of the hook and
 		// Actual execution. Skip execution if we are no longer the leader.
 		var isLeader bool
@@ -101,9 +98,6 @@ func (rh *runHook) Prepare(state State) (*State, error) {
 func RunningHookMessage(hookName string, info hook.Info) string {
 	if info.Kind.IsRelation() && info.RemoteUnit != "" {
 		return fmt.Sprintf("running %s hook for %s", hookName, info.RemoteUnit)
-	}
-	if info.Kind.IsSecret() {
-		return fmt.Sprintf("running %s hook for %s", hookName, info.SecretURL)
 	}
 	return fmt.Sprintf("running %s hook", hookName)
 }
@@ -141,6 +135,19 @@ func (rh *runHook) Execute(state State) (*State, error) {
 		fallthrough
 	case cause == context.ErrReboot:
 		err = ErrNeedsReboot
+	case cause == runner.ErrTerminated:
+		// Queue the hook again so it is re-run.
+		// It is likely the whole process group was terminated as
+		// part of shutdown, but in case not, the unit agent will
+		// treat the hook as pending (not queued) and record a hook error.
+		rh.logger.Warningf("hook %q was terminated", rh.name)
+		step = Queued
+		return stateChange{
+			Kind:     RunHook,
+			Step:     step,
+			Hook:     &rh.info,
+			HookStep: &step,
+		}.apply(state), runner.ErrTerminated
 	case err == nil:
 	default:
 		rh.logger.Errorf("hook %q (via %s) failed: %v", rh.name, handlerType, err)
@@ -164,6 +171,7 @@ func (rh *runHook) Execute(state State) (*State, error) {
 		Kind:            RunHook,
 		Step:            step,
 		Hook:            &rh.info,
+		HookStep:        &step,
 		HasRunStatusSet: hasRunStatusSet,
 	}.apply(state), err
 }
@@ -293,8 +301,6 @@ func (rh *runHook) Commit(state State) (*State, error) {
 	case hooks.PostSeriesUpgrade:
 		message := createUpgradeSeriesStatusMessage(rh.name, rh.hookFound)
 		err = rh.callbacks.SetUpgradeSeriesStatus(model.UpgradeSeriesCompleted, message)
-	case hooks.SecretRotate:
-		err = rh.callbacks.SetSecretRotated(rh.info.SecretURL, time.Now())
 	}
 	if err != nil {
 		return nil, err

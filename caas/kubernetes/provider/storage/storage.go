@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/juju/errors"
-	"github.com/lxc/lxd/shared/logger"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -119,7 +118,7 @@ func VolumeInfo(pv *resources.PersistentVolume, now time.Time) caas.VolumeInfo {
 	return caas.VolumeInfo{
 		VolumeId:   pv.Name,
 		Size:       size,
-		Persistent: pv.Spec.PersistentVolumeReclaimPolicy == corev1.PersistentVolumeReclaimRetain,
+		Persistent: true,
 		Status: status.StatusInfo{
 			Status:  VolumeStatus(pv.Status.Phase),
 			Message: pv.Status.Message,

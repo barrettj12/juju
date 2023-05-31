@@ -12,8 +12,8 @@ import (
 	"github.com/juju/clock"
 	"github.com/juju/errors"
 	"github.com/juju/mgo/v2/bson"
+	mgotesting "github.com/juju/mgo/v2/testing"
 	"github.com/juju/names/v4"
-	gitjujutesting "github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/v3"
 	gc "gopkg.in/check.v1"
@@ -24,6 +24,7 @@ import (
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/state"
+	stateerrors "github.com/juju/juju/state/errors"
 	"github.com/juju/juju/storage"
 	"github.com/juju/juju/testing"
 	"github.com/juju/juju/testing/factory"
@@ -833,7 +834,7 @@ func (s *ModelSuite) TestDestroyControllerAndHostedModelsWithResources(c *gc.C) 
 	assertModel(controllerModel, s.State, state.Dying, 0, 0)
 
 	err = s.State.ProcessDyingModel()
-	c.Assert(err, jc.Satisfies, state.IsHasHostedModelsError)
+	c.Assert(errors.Is(err, stateerrors.HasHostedModelsError), jc.IsTrue)
 	c.Assert(err, gc.ErrorMatches, `hosting 1 other model`)
 
 	assertCleanupCount(c, otherSt, 3)
@@ -874,7 +875,7 @@ func (s *ModelSuite) assertDestroyControllerAndHostedModelsWithPersistentStorage
 		DestroyHostedModels: true,
 		Force:               force,
 	})
-	c.Assert(err, jc.Satisfies, state.IsHasPersistentStorageError)
+	c.Assert(errors.Is(err, stateerrors.PersistentStorageError), jc.IsTrue)
 }
 
 func (s *ModelSuite) TestDestroyControllerAndHostedModelsWithPersistentStorage(c *gc.C) {
@@ -993,7 +994,7 @@ func (s *ModelSuite) assertDestroyModelPersistentStorage(c *gc.C, force *bool) {
 	})
 
 	err = m.Destroy(state.DestroyModelParams{Force: force})
-	c.Assert(err, jc.Satisfies, state.IsHasPersistentStorageError)
+	c.Assert(errors.Is(err, stateerrors.PersistentStorageError), jc.IsTrue)
 	c.Assert(m.Refresh(), jc.ErrorIsNil)
 	c.Assert(m.Life(), gc.Equals, state.Alive)
 }
@@ -1311,7 +1312,7 @@ func (s *ModelSuite) TestProcessDyingModelWithMachinesAndApplicationsNoOp(c *gc.
 	defer state.SetAfterHooks(c, st, func() {
 		assertModel(state.Dying, 1, 1)
 		err := st.ProcessDyingModel()
-		c.Assert(err, jc.Satisfies, state.IsModelNotEmptyError)
+		c.Assert(errors.Is(err, stateerrors.ModelNotEmptyError), jc.IsTrue)
 		c.Assert(err, gc.ErrorMatches, `model not empty, found 1 machine, 1 application`)
 	}).Check()
 
@@ -1345,7 +1346,7 @@ func (s *ModelSuite) TestProcessDyingModelWithVolumeBackedFilesystems(c *gc.C) {
 	c.Assert(filesystems, gc.HasLen, 1)
 
 	err = model.Destroy(state.DestroyModelParams{})
-	c.Assert(err, jc.Satisfies, state.IsHasPersistentStorageError)
+	c.Assert(errors.Is(err, stateerrors.PersistentStorageError), jc.IsTrue)
 
 	destroyStorage := true
 	c.Assert(model.Destroy(state.DestroyModelParams{
@@ -1366,7 +1367,7 @@ func (s *ModelSuite) TestProcessDyingModelWithVolumeBackedFilesystems(c *gc.C) {
 	// The filesystem will be gone, but the volume is persistent and should
 	// not have been removed.
 	err = st.ProcessDyingModel()
-	c.Assert(err, jc.Satisfies, state.IsModelNotEmptyError)
+	c.Assert(errors.Is(err, stateerrors.ModelNotEmptyError), jc.IsTrue)
 	c.Assert(err, gc.ErrorMatches, `model not empty, found 1 volume, 1 filesystem`)
 }
 
@@ -1397,7 +1398,7 @@ func (s *ModelSuite) TestProcessDyingModelWithVolumes(c *gc.C) {
 	volumeTag := volumes[0].VolumeTag()
 
 	err = model.Destroy(state.DestroyModelParams{})
-	c.Assert(err, jc.Satisfies, state.IsHasPersistentStorageError)
+	c.Assert(errors.Is(err, stateerrors.PersistentStorageError), jc.IsTrue)
 
 	destroyStorage := true
 	c.Assert(model.Destroy(state.DestroyModelParams{
@@ -1414,7 +1415,7 @@ func (s *ModelSuite) TestProcessDyingModelWithVolumes(c *gc.C) {
 	// The volume is persistent and should not have been removed along with
 	// the machine it was attached to.
 	err = st.ProcessDyingModel()
-	c.Assert(err, jc.Satisfies, state.IsModelNotEmptyError)
+	c.Assert(errors.Is(err, stateerrors.ModelNotEmptyError), jc.IsTrue)
 	c.Assert(err, gc.ErrorMatches, `model not empty, found 1 volume`)
 }
 
@@ -1431,7 +1432,7 @@ func (s *ModelSuite) TestProcessDyingControllerModelWithHostedModelsNoOp(c *gc.C
 	}), jc.ErrorIsNil)
 
 	err = s.State.ProcessDyingModel()
-	c.Assert(err, jc.Satisfies, state.IsHasHostedModelsError)
+	c.Assert(errors.Is(err, stateerrors.HasHostedModelsError), jc.IsTrue)
 	c.Assert(err, gc.ErrorMatches, `hosting 1 other model`)
 
 	c.Assert(controllerModel.Refresh(), jc.ErrorIsNil)
@@ -1742,7 +1743,7 @@ func (s *ModelSuite) TestDestroyForceWorksWhenRemoteRelationScopesAreStuck(c *gc
 }
 
 type ModelCloudValidationSuite struct {
-	gitjujutesting.MgoSuite
+	mgotesting.MgoSuite
 }
 
 var _ = gc.Suite(&ModelCloudValidationSuite{})
@@ -1753,13 +1754,14 @@ var _ = gc.Suite(&ModelCloudValidationSuite{})
 func (s *ModelCloudValidationSuite) TestNewModelDifferentCloud(c *gc.C) {
 	controller, owner := s.initializeState(c, []cloud.Region{{Name: "some-region"}}, []cloud.AuthType{cloud.EmptyAuthType}, nil)
 	defer controller.Close()
-	st := controller.SystemState()
+	st, err := controller.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
 	aCloud := cloud.Cloud{
 		Name:      "another",
 		Type:      "dummy",
 		AuthTypes: cloud.AuthTypes{"empty", "userpass"},
 	}
-	err := st.AddCloud(aCloud, owner.Name())
+	err = st.AddCloud(aCloud, owner.Name())
 	c.Assert(err, jc.ErrorIsNil)
 	cfg, _ := createTestModelConfig(c, st.ModelUUID())
 	cfg, err = cfg.Apply(map[string]interface{}{"name": "whatever"})
@@ -1782,9 +1784,10 @@ func (s *ModelCloudValidationSuite) TestNewModelDifferentCloud(c *gc.C) {
 func (s *ModelCloudValidationSuite) TestNewModelUnknownCloudRegion(c *gc.C) {
 	controller, owner := s.initializeState(c, []cloud.Region{{Name: "some-region"}}, []cloud.AuthType{cloud.EmptyAuthType}, nil)
 	defer controller.Close()
-	st := controller.SystemState()
+	st, err := controller.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
 	cfg, _ := createTestModelConfig(c, st.ModelUUID())
-	_, _, err := controller.NewModel(state.ModelArgs{
+	_, _, err = controller.NewModel(state.ModelArgs{
 		Type:                    state.ModelTypeIAAS,
 		CloudName:               "dummy",
 		CloudRegion:             "dummy-region",
@@ -1798,9 +1801,10 @@ func (s *ModelCloudValidationSuite) TestNewModelUnknownCloudRegion(c *gc.C) {
 func (s *ModelCloudValidationSuite) TestNewModelDefaultCloudRegion(c *gc.C) {
 	controller, owner := s.initializeState(c, []cloud.Region{{Name: "dummy-region"}}, []cloud.AuthType{cloud.EmptyAuthType}, nil)
 	defer controller.Close()
-	st := controller.SystemState()
+	st, err := controller.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
 	cfg, _ := createTestModelConfig(c, st.ModelUUID())
-	cfg, err := cfg.Apply(map[string]interface{}{"name": "whatever"})
+	cfg, err = cfg.Apply(map[string]interface{}{"name": "whatever"})
 	c.Assert(err, jc.ErrorIsNil)
 	m, newSt, err := controller.NewModel(state.ModelArgs{
 		Type:                    state.ModelTypeIAAS,
@@ -1817,9 +1821,10 @@ func (s *ModelCloudValidationSuite) TestNewModelDefaultCloudRegion(c *gc.C) {
 func (s *ModelCloudValidationSuite) TestNewModelMissingCloudRegion(c *gc.C) {
 	controller, owner := s.initializeState(c, []cloud.Region{{Name: "dummy-region"}, {Name: "dummy-region2"}}, []cloud.AuthType{cloud.EmptyAuthType}, nil)
 	defer controller.Close()
-	st := controller.SystemState()
+	st, err := controller.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
 	cfg, _ := createTestModelConfig(c, st.ModelUUID())
-	_, _, err := controller.NewModel(state.ModelArgs{
+	_, _, err = controller.NewModel(state.ModelArgs{
 		Type:                    state.ModelTypeIAAS,
 		CloudName:               "dummy",
 		Config:                  cfg,
@@ -1838,10 +1843,11 @@ func (s *ModelCloudValidationSuite) TestNewModelUnknownCloudCredential(c *gc.C) 
 		},
 	)
 	defer controller.Close()
-	st := controller.SystemState()
+	st, err := controller.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
 	unknownCredentialTag := names.NewCloudCredentialTag("dummy/" + owner.Id() + "/unknown-credential")
 	cfg, _ := createTestModelConfig(c, st.ModelUUID())
-	_, _, err := controller.NewModel(state.ModelArgs{
+	_, _, err = controller.NewModel(state.ModelArgs{
 		Type:                    state.ModelTypeIAAS,
 		CloudName:               "dummy",
 		CloudRegion:             "dummy-region",
@@ -1862,9 +1868,10 @@ func (s *ModelCloudValidationSuite) TestNewModelMissingCloudCredential(c *gc.C) 
 		},
 	)
 	defer controller.Close()
-	st := controller.SystemState()
+	st, err := controller.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
 	cfg, _ := createTestModelConfig(c, st.ModelUUID())
-	_, _, err := controller.NewModel(state.ModelArgs{
+	_, _, err = controller.NewModel(state.ModelArgs{
 		Type:                    state.ModelTypeIAAS,
 		CloudName:               "dummy",
 		CloudRegion:             "dummy-region",
@@ -1886,9 +1893,10 @@ func (s *ModelCloudValidationSuite) TestNewModelMissingCloudCredentialSupportsEm
 	}
 	controller, owner := s.initializeState(c, regions, []cloud.AuthType{cloud.EmptyAuthType}, nil)
 	defer controller.Close()
-	st := controller.SystemState()
+	st, err := controller.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
 	cfg, _ := createTestModelConfig(c, st.ModelUUID())
-	cfg, err := cfg.Apply(map[string]interface{}{"name": "whatever"})
+	cfg, err = cfg.Apply(map[string]interface{}{"name": "whatever"})
 	c.Assert(err, jc.ErrorIsNil)
 	_, newSt, err := controller.NewModel(state.ModelArgs{
 		Type:      state.ModelTypeIAAS,
@@ -1907,10 +1915,11 @@ func (s *ModelCloudValidationSuite) TestNewModelOtherUserCloudCredential(c *gc.C
 		},
 	)
 	defer controller.Close()
-	st := controller.SystemState()
+	st, err := controller.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
 	owner := factory.NewFactory(st, controller.StatePool()).MakeUser(c, nil).UserTag()
 	cfg, _ := createTestModelConfig(c, st.ModelUUID())
-	_, _, err := controller.NewModel(state.ModelArgs{
+	_, _, err = controller.NewModel(state.ModelArgs{
 		Type:                    state.ModelTypeIAAS,
 		CloudName:               "dummy",
 		Config:                  cfg,

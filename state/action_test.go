@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/juju/charm/v8"
 	"github.com/juju/clock/testclock"
 	"github.com/juju/errors"
 	"github.com/juju/names/v4"
@@ -67,14 +68,14 @@ func (s *ActionSuite) SetUpTest(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(s.unit.Series(), gc.Equals, "quantal")
 
-	err = s.unit.SetCharmURL(sURL)
+	err = s.unit.SetCharmURL(charm.MustParseURL(*sURL))
 	c.Assert(err, jc.ErrorIsNil)
 
 	s.unit2, err = s.application.AddUnit(state.AddUnitParams{})
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(s.unit2.Series(), gc.Equals, "quantal")
 
-	err = s.unit2.SetCharmURL(sURL)
+	err = s.unit2.SetCharmURL(charm.MustParseURL(*sURL))
 	c.Assert(err, jc.ErrorIsNil)
 
 	s.charmlessUnit, err = s.application.AddUnit(state.AddUnitParams{})
@@ -85,7 +86,7 @@ func (s *ActionSuite) SetUpTest(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(s.actionlessUnit.Series(), gc.Equals, "quantal")
 
-	err = s.actionlessUnit.SetCharmURL(actionlessSURL)
+	err = s.actionlessUnit.SetCharmURL(charm.MustParseURL(*actionlessSURL))
 	c.Assert(err, jc.ErrorIsNil)
 
 	s.model, err = s.State.Model()
@@ -163,7 +164,10 @@ func (s *ActionSuite) TestAddAction(c *gc.C) {
 
 		if t.expectedErr == "" {
 			c.Assert(err, jc.ErrorIsNil)
-			curl, _ := t.whichUnit.CharmURL()
+			curlStr := t.whichUnit.CharmURL()
+			c.Assert(curlStr, gc.NotNil)
+			curl, err := charm.ParseURL(*curlStr)
+			c.Assert(err, jc.ErrorIsNil)
 			ch, _ := s.State.Charm(curl)
 			schema := ch.Actions()
 			c.Logf("Schema for unit %q:\n%#v", t.whichUnit.Name(), schema)
@@ -591,7 +595,7 @@ func makeUnits(c *gc.C, s *ActionSuite, units map[string]*state.Unit, schemas ma
 		u, err := app.AddUnit(state.AddUnitParams{})
 		c.Assert(err, jc.ErrorIsNil)
 		c.Assert(u.Series(), gc.Equals, "quantal")
-		err = u.SetCharmURL(sURL)
+		err = u.SetCharmURL(charm.MustParseURL(*sURL))
 		c.Assert(err, jc.ErrorIsNil)
 
 		units[name] = u

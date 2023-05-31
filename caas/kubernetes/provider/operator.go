@@ -25,11 +25,12 @@ import (
 	"github.com/juju/juju/agent"
 	"github.com/juju/juju/caas"
 	k8sconstants "github.com/juju/juju/caas/kubernetes/provider/constants"
+	"github.com/juju/juju/caas/kubernetes/provider/resources"
 	"github.com/juju/juju/caas/kubernetes/provider/storage"
 	"github.com/juju/juju/caas/kubernetes/provider/utils"
 	k8sannotations "github.com/juju/juju/core/annotations"
 	"github.com/juju/juju/core/paths"
-	"github.com/juju/juju/core/resources"
+	coreresources "github.com/juju/juju/core/resources"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/core/watcher"
 	"github.com/juju/juju/juju/osenv"
@@ -38,7 +39,7 @@ import (
 const (
 	// OperatorAppTarget is the constant used to describe the operator's target
 	// in kubernetes. This allows us to differentiate between different
-	// operators that would possible have the same labels otherwise
+	// operators that would possibly have the same labels otherwise.
 	OperatorAppTarget = "application"
 )
 
@@ -635,6 +636,7 @@ func (k *kubernetesClient) DeleteOperator(appName string) (err error) {
 		// Just in case the volume reclaim policy is retain, we force deletion
 		// for operators as the volume is an inseparable part of the operator.
 		for _, volName := range volumeNames {
+			logger.Infof("deleting operator PV %s for application %s due to call to kubernetesClient.DeleteOperator", volName, appName)
 			err = pvs.Delete(context.TODO(), volName, v1.DeleteOptions{
 				PropagationPolicy: k8sconstants.DefaultPropagationPolicy(),
 			})
@@ -695,7 +697,7 @@ func (k *kubernetesClient) Operator(appName string) (*caas.Operator, error) {
 	}
 
 	terminated := opPod.DeletionTimestamp != nil
-	statusMessage, opStatus, since, err := podToJujuStatus(
+	statusMessage, opStatus, since, err := resources.PodToJujuStatus(
 		opPod, k.clock.Now(), eventGetter)
 	if err != nil {
 		return nil, errors.Trace(err)
@@ -710,7 +712,7 @@ func (k *kubernetesClient) Operator(appName string) (*caas.Operator, error) {
 	}
 	for _, container := range opPod.Spec.Containers {
 		if container.Name == operatorContainerName {
-			cfg.ImageDetails = resources.DockerImageDetails{
+			cfg.ImageDetails = coreresources.DockerImageDetails{
 				RegistryPath: container.Image,
 			}
 			break
@@ -750,7 +752,7 @@ func operatorPod(
 	appName,
 	operatorServiceIP,
 	agentPath string,
-	operatorImageDetails resources.DockerImageDetails,
+	operatorImageDetails coreresources.DockerImageDetails,
 	selectorLabels map[string]string,
 	annotations k8sannotations.Annotation,
 	serviceAccountName string,

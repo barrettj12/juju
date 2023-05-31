@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -38,18 +39,18 @@ var (
 // The acceptable format for storage constraints is a comma separated
 // sequence of: POOL, COUNT, and SIZE, where
 //
-//    POOL identifies the storage pool. POOL can be a string
-//    starting with a letter, followed by zero or more digits
-//    or letters optionally separated by hyphens.
+//	POOL identifies the storage pool. POOL can be a string
+//	starting with a letter, followed by zero or more digits
+//	or letters optionally separated by hyphens.
 //
-//    COUNT is a positive integer indicating how many instances
-//    of the storage to create. If unspecified, and SIZE is
-//    specified, COUNT defaults to 1.
+//	COUNT is a positive integer indicating how many instances
+//	of the storage to create. If unspecified, and SIZE is
+//	specified, COUNT defaults to 1.
 //
-//    SIZE describes the minimum size of the storage instances to
-//    create. SIZE is a floating point number and multiplier from
-//    the set (M, G, T, P, E, Z, Y), which are all treated as
-//    powers of 1024.
+//	SIZE describes the minimum size of the storage instances to
+//	create. SIZE is a floating point number and multiplier from
+//	the set (M, G, T, P, E, Z, Y), which are all treated as
+//	powers of 1024.
 func ParseConstraints(s string) (Constraints, error) {
 	var cons Constraints
 	fields := strings.Split(s, ",")
@@ -100,9 +101,13 @@ func IsValidPoolName(s string) bool {
 // with constraints as values.
 //
 // Storage constraints may be specified as
-//     <name>=<constraints>
+//
+//	<name>=<constraints>
+//
 // or as
-//     <name>
+//
+//	<name>
+//
 // where latter is equivalent to <name>=1.
 //
 // Duplicate storage names cause an error to be returned.
@@ -166,4 +171,23 @@ func parseSize(s string) (uint64, bool, error) {
 		return 0, true, err
 	}
 	return size, true, nil
+}
+
+// ToString returns a parsable string representation of the storage constraints.
+func ToString(c Constraints) (string, error) {
+	if c.Pool == "" && c.Size <= 0 && c.Count <= 0 {
+		return "", errors.Errorf("must provide one of pool or size or count")
+	}
+
+	var parts []string
+	if c.Pool != "" {
+		parts = append(parts, c.Pool)
+	}
+	if c.Count > 0 {
+		parts = append(parts, fmt.Sprintf("%d", c.Count))
+	}
+	if c.Size > 0 {
+		parts = append(parts, fmt.Sprintf("%dM", c.Size))
+	}
+	return strings.Join(parts, ","), nil
 }

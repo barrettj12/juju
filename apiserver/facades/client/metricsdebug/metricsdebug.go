@@ -1,8 +1,6 @@
 // Copyright 2016 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
-// Package metricsdebug contains the implementation of an api endpoint
-// for metrics debug functionality.
 package metricsdebug
 
 import (
@@ -10,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/juju/charm/v8"
 	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 
@@ -180,11 +179,15 @@ func (api *MetricsDebugAPI) setEntityMeterStatus(entity names.Tag, status state.
 		if err != nil {
 			return errors.Trace(err)
 		}
-		chURL, found := unit.CharmURL()
-		if !found {
+		chURLStr := unit.CharmURL()
+		if chURLStr == nil {
 			return errors.New("no charm url")
 		}
-		if chURL.Schema != "local" {
+		chURL, err := charm.ParseURL(*chURLStr)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		if !charm.Local.Matches(chURL.Schema) {
 			return errors.New("not a local charm")
 		}
 		err = unit.SetMeterStatus(status.Code.String(), status.Info)
@@ -196,8 +199,12 @@ func (api *MetricsDebugAPI) setEntityMeterStatus(entity names.Tag, status state.
 		if err != nil {
 			return errors.Trace(err)
 		}
-		chURL, _ := application.CharmURL()
-		if chURL.Schema != "local" {
+		cURL, _ := application.CharmURL()
+		curl, err := charm.ParseURL(*cURL)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		if !charm.Local.Matches(curl.Schema) {
 			return errors.New("not a local charm")
 		}
 		units, err := application.AllUnits()

@@ -20,8 +20,8 @@ import (
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/crossmodel"
 	"github.com/juju/juju/core/instance"
+	resourcetesting "github.com/juju/juju/core/resources/testing"
 	"github.com/juju/juju/core/status"
-	"github.com/juju/juju/resource/resourcetesting"
 	"github.com/juju/juju/state"
 	"github.com/juju/juju/state/stateenvirons"
 	"github.com/juju/juju/state/storage"
@@ -316,10 +316,11 @@ func (s *CleanupSuite) TestCleanupModelOffers(c *gc.C) {
 		},
 	}
 	remoteApp, err := s.State.AddRemoteApplication(state.AddRemoteApplicationParams{
-		Name:        "remote-wordpress",
-		SourceModel: s.Model.ModelTag(),
-		Token:       "t0",
-		Endpoints:   wordpressEps,
+		Name:            "remote-wordpress",
+		SourceModel:     s.Model.ModelTag(),
+		IsConsumerProxy: true,
+		Token:           "t0",
+		Endpoints:       wordpressEps,
 	})
 	c.Assert(err, jc.ErrorIsNil)
 
@@ -382,14 +383,12 @@ func (s *CleanupSuite) TestCleanupModelOffers(c *gc.C) {
 		c.Assert(unit.Life(), gc.Equals, state.Alive)
 	}
 
-	s.assertCleanupCount(c, 2)
-
+	s.assertCleanupCount(c, 3)
 	allOffers, err := offers.ListOffers()
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(allOffers, gc.HasLen, 0)
-	wordpress, err := s.State.RemoteApplication("remote-wordpress")
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(wordpress.Life(), gc.Equals, state.Dying)
+	_, err = s.State.RemoteApplication("remote-wordpress")
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 }
 
 func (s *CleanupSuite) TestCleanupRelationSettings(c *gc.C) {
@@ -1215,9 +1214,8 @@ func (s *CleanupSuite) TestCleanupResourceBlob(c *gc.C) {
 	app := s.AddTestingApplication(c, "wp", s.AddTestingCharm(c, "wordpress"))
 	data := "ancient-debris"
 	res := resourcetesting.NewResource(c, nil, "mug", "wp", data).Resource
-	resources, err := s.State.Resources()
-	c.Assert(err, jc.ErrorIsNil)
-	_, err = resources.SetResource("wp", res.Username, res.Resource, bytes.NewBufferString(data), state.IncrementCharmModifiedVersion)
+	resources := s.State.Resources()
+	_, err := resources.SetResource("wp", res.Username, res.Resource, bytes.NewBufferString(data), state.IncrementCharmModifiedVersion)
 	c.Assert(err, jc.ErrorIsNil)
 
 	err = app.Destroy()
@@ -1240,9 +1238,8 @@ func (s *CleanupSuite) TestCleanupResourceBlobHandlesMissing(c *gc.C) {
 	app := s.AddTestingApplication(c, "wp", s.AddTestingCharm(c, "wordpress"))
 	data := "ancient-debris"
 	res := resourcetesting.NewResource(c, nil, "mug", "wp", data).Resource
-	resources, err := s.State.Resources()
-	c.Assert(err, jc.ErrorIsNil)
-	_, err = resources.SetResource("wp", res.Username, res.Resource, bytes.NewBufferString(data), state.IncrementCharmModifiedVersion)
+	resources := s.State.Resources()
+	_, err := resources.SetResource("wp", res.Username, res.Resource, bytes.NewBufferString(data), state.IncrementCharmModifiedVersion)
 	c.Assert(err, jc.ErrorIsNil)
 
 	err = app.Destroy()

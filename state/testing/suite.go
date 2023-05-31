@@ -9,6 +9,7 @@ import (
 
 	"github.com/juju/clock/testclock"
 	"github.com/juju/loggo"
+	mgotesting "github.com/juju/mgo/v2/testing"
 	"github.com/juju/names/v4"
 	jujutesting "github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
@@ -28,7 +29,7 @@ var _ = gc.Suite(&StateSuite{})
 // StateSuite provides setup and teardown for tests that require a
 // state.State.
 type StateSuite struct {
-	jujutesting.MgoSuite
+	mgotesting.MgoSuite
 	testing.BaseSuite
 	NewPolicy                 state.NewPolicyFunc
 	Controller                *state.Controller
@@ -104,7 +105,9 @@ func (s *StateSuite) SetUpTest(c *gc.C) {
 		close(s.txnSyncNotify)
 	})
 	s.StatePool = s.Controller.StatePool()
-	s.State = s.StatePool.SystemState()
+	var err error
+	s.State, err = s.StatePool.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
 	model, err := s.State.Model()
 	c.Assert(err, jc.ErrorIsNil)
 	s.Model = model

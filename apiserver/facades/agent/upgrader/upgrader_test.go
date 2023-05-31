@@ -56,7 +56,9 @@ func (s *upgraderSuite) SetUpTest(c *gc.C) {
 	s.authorizer = apiservertesting.FakeAuthorizer{
 		Tag: s.rawMachine.Tag(),
 	}
-	s.upgrader, err = upgrader.NewUpgraderAPI(s.StatePool.SystemState(), s.State, s.resources, s.authorizer)
+	systemState, err := s.StatePool.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
+	s.upgrader, err = upgrader.NewUpgraderAPI(systemState, s.State, s.resources, s.authorizer)
 	c.Assert(err, jc.ErrorIsNil)
 }
 
@@ -102,7 +104,9 @@ func (s *upgraderSuite) TestWatchAPIVersionApplication(c *gc.C) {
 	authorizer := apiservertesting.FakeAuthorizer{
 		Tag: app.Tag(),
 	}
-	upgrader, err := upgrader.NewUpgraderAPI(s.StatePool.SystemState(), s.State, s.resources, authorizer)
+	systemState, err := s.StatePool.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
+	upgrader, err := upgrader.NewUpgraderAPI(systemState, s.State, s.resources, authorizer)
 	c.Assert(err, jc.ErrorIsNil)
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: app.Tag().String()}},
@@ -134,7 +138,9 @@ func (s *upgraderSuite) TestWatchAPIVersionUnit(c *gc.C) {
 	authorizer := apiservertesting.FakeAuthorizer{
 		Tag: unit.Tag(),
 	}
-	upgrader, err := upgrader.NewUpgraderAPI(s.StatePool.SystemState(), s.State, s.resources, authorizer)
+	systemState, err := s.StatePool.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
+	upgrader, err := upgrader.NewUpgraderAPI(systemState, s.State, s.resources, authorizer)
 	c.Assert(err, jc.ErrorIsNil)
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: unit.Tag().String()}},
@@ -164,7 +170,9 @@ func (s *upgraderSuite) TestWatchAPIVersionControllerAgent(c *gc.C) {
 	authorizer := apiservertesting.FakeAuthorizer{
 		Tag: node.Tag(),
 	}
-	upgrader, err := upgrader.NewUpgraderAPI(s.StatePool.SystemState(), s.State, s.resources, authorizer)
+	systemState, err := s.StatePool.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
+	upgrader, err := upgrader.NewUpgraderAPI(systemState, s.State, s.resources, authorizer)
 	c.Assert(err, jc.ErrorIsNil)
 
 	args := params.Entities{
@@ -193,7 +201,9 @@ func (s *upgraderSuite) TestWatchAPIVersionRefusesWrongAgent(c *gc.C) {
 	// We are a machine agent, but not the one we are trying to track
 	anAuthorizer := s.authorizer
 	anAuthorizer.Tag = names.NewMachineTag("12354")
-	anUpgrader, err := upgrader.NewUpgraderAPI(s.StatePool.SystemState(), s.State, s.resources, anAuthorizer)
+	systemState, err := s.StatePool.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
+	anUpgrader, err := upgrader.NewUpgraderAPI(systemState, s.State, s.resources, anAuthorizer)
 	c.Check(err, jc.ErrorIsNil)
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: s.rawMachine.Tag().String()}},
@@ -216,7 +226,9 @@ func (s *upgraderSuite) TestToolsNothing(c *gc.C) {
 func (s *upgraderSuite) TestToolsRefusesWrongAgent(c *gc.C) {
 	anAuthorizer := s.authorizer
 	anAuthorizer.Tag = names.NewMachineTag("12354")
-	anUpgrader, err := upgrader.NewUpgraderAPI(s.StatePool.SystemState(), s.State, s.resources, anAuthorizer)
+	systemState, err := s.StatePool.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
+	anUpgrader, err := upgrader.NewUpgraderAPI(systemState, s.State, s.resources, anAuthorizer)
 	c.Check(err, jc.ErrorIsNil)
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: s.rawMachine.Tag().String()}},
@@ -230,7 +242,7 @@ func (s *upgraderSuite) TestToolsRefusesWrongAgent(c *gc.C) {
 }
 
 func (s *upgraderSuite) TestToolsForAgent(c *gc.C) {
-	current := coretesting.CurrentVersion(c)
+	current := coretesting.CurrentVersion()
 	agent := params.Entity{Tag: s.rawMachine.Tag().String()}
 
 	// The machine must have its existing tools set before we query for the
@@ -264,13 +276,15 @@ func (s *upgraderSuite) TestSetToolsNothing(c *gc.C) {
 func (s *upgraderSuite) TestSetToolsRefusesWrongAgent(c *gc.C) {
 	anAuthorizer := s.authorizer
 	anAuthorizer.Tag = names.NewMachineTag("12354")
-	anUpgrader, err := upgrader.NewUpgraderAPI(s.StatePool.SystemState(), s.State, s.resources, anAuthorizer)
+	systemState, err := s.StatePool.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
+	anUpgrader, err := upgrader.NewUpgraderAPI(systemState, s.State, s.resources, anAuthorizer)
 	c.Check(err, jc.ErrorIsNil)
 	args := params.EntitiesVersion{
 		AgentTools: []params.EntityVersion{{
 			Tag: s.rawMachine.Tag().String(),
 			Tools: &params.Version{
-				Version: coretesting.CurrentVersion(c),
+				Version: coretesting.CurrentVersion(),
 			},
 		}},
 	}
@@ -282,7 +296,7 @@ func (s *upgraderSuite) TestSetToolsRefusesWrongAgent(c *gc.C) {
 }
 
 func (s *upgraderSuite) TestSetTools(c *gc.C) {
-	current := coretesting.CurrentVersion(c)
+	current := coretesting.CurrentVersion()
 	_, err := s.rawMachine.AgentTools()
 	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 	args := params.EntitiesVersion{
@@ -317,7 +331,9 @@ func (s *upgraderSuite) TestDesiredVersionNothing(c *gc.C) {
 func (s *upgraderSuite) TestDesiredVersionRefusesWrongAgent(c *gc.C) {
 	anAuthorizer := s.authorizer
 	anAuthorizer.Tag = names.NewMachineTag("12354")
-	anUpgrader, err := upgrader.NewUpgraderAPI(s.StatePool.SystemState(), s.State, s.resources, anAuthorizer)
+	systemState, err := s.StatePool.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
+	anUpgrader, err := upgrader.NewUpgraderAPI(systemState, s.State, s.resources, anAuthorizer)
 	c.Check(err, jc.ErrorIsNil)
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: s.rawMachine.Tag().String()}},
@@ -362,7 +378,7 @@ func (s *upgraderSuite) TestDesiredVersionForAgent(c *gc.C) {
 func (s *upgraderSuite) bumpDesiredAgentVersion(c *gc.C) version.Number {
 	// In order to call SetModelAgentVersion we have to first SetTools on
 	// all the existing machines
-	current := coretesting.CurrentVersion(c)
+	current := coretesting.CurrentVersion()
 	err := s.apiMachine.SetAgentVersion(current)
 	c.Assert(err, jc.ErrorIsNil)
 	err = s.rawMachine.SetAgentVersion(current)
@@ -385,7 +401,9 @@ func (s *upgraderSuite) TestDesiredVersionUnrestrictedForAPIAgents(c *gc.C) {
 	authorizer := apiservertesting.FakeAuthorizer{
 		Tag: s.apiMachine.Tag(),
 	}
-	upgraderAPI, err := upgrader.NewUpgraderAPI(s.StatePool.SystemState(), s.State, s.resources, authorizer)
+	systemState, err := s.StatePool.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
+	upgraderAPI, err := upgrader.NewUpgraderAPI(systemState, s.State, s.resources, authorizer)
 	c.Assert(err, jc.ErrorIsNil)
 	args := params.Entities{Entities: []params.Entity{{Tag: s.apiMachine.Tag().String()}}}
 	results, err := upgraderAPI.DesiredVersion(args)

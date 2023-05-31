@@ -85,11 +85,13 @@ func (s *WorkerSuite) SetUpTest(c *gc.C) {
 	s.hub = pubsub.NewStructuredHub(&pubsub.StructuredHubConfig{
 		Logger: loggo.GetLogger("test"),
 	})
+	allWatcherBacking, err := state.NewAllWatcherBacking(s.StatePool)
+	c.Assert(err, jc.ErrorIsNil)
 	w, err := multiworker.NewWorker(
 		multiworker.Config{
 			Clock:                clock.WallClock,
 			Logger:               s.logger,
-			Backing:              state.NewAllWatcherBacking(s.StatePool),
+			Backing:              allWatcherBacking,
 			PrometheusRegisterer: noopRegisterer{},
 		})
 	c.Assert(err, jc.ErrorIsNil)
@@ -246,7 +248,9 @@ func (s *WorkerSuite) TestInitialModel(c *gc.C) {
 }
 
 func (s *WorkerSuite) TestControllerConfigOnInit(c *gc.C) {
-	err := s.StatePool.SystemState().UpdateControllerConfig(
+	systemState, err := s.StatePool.SystemState()
+	c.Assert(err, jc.ErrorIsNil)
+	err = systemState.UpdateControllerConfig(
 		map[string]interface{}{
 			"controller-name": "test-controller",
 		}, nil)
@@ -506,7 +510,7 @@ func (s *WorkerSuite) TestAddCharm(c *gc.C) {
 	change := s.nextChange(c, changes)
 	obtained, ok := change.(cache.CharmChange)
 	c.Assert(ok, jc.IsTrue)
-	c.Check(obtained.CharmURL, gc.Equals, charm.URL().String())
+	c.Check(obtained.CharmURL, gc.Equals, charm.String())
 
 	controller := s.getController(c, w)
 	modUUIDs := controller.ModelUUIDs()
@@ -515,7 +519,7 @@ func (s *WorkerSuite) TestAddCharm(c *gc.C) {
 	mod, err := controller.Model(modUUIDs[0])
 	c.Assert(err, jc.ErrorIsNil)
 
-	cachedCharm, err := mod.Charm(charm.URL().String())
+	cachedCharm, err := mod.Charm(charm.String())
 	c.Assert(err, jc.ErrorIsNil)
 	c.Check(cachedCharm, gc.NotNil)
 }
@@ -545,7 +549,7 @@ func (s *WorkerSuite) TestRemoveCharm(c *gc.C) {
 			mod, err := controller.Model(modUUID)
 			c.Assert(err, jc.ErrorIsNil)
 
-			_, err = mod.Charm(charm.URL().String())
+			_, err = mod.Charm(charm.String())
 			c.Check(errors.IsNotFound(err), jc.IsTrue)
 			return
 		}

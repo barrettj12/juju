@@ -45,6 +45,7 @@ func (*fakeStatusAPI) Status(c []string) (*params.FullStatus, error) {
 				},
 				InstanceId: "juju-badd06-0",
 				Series:     "trusty",
+				Base:       params.Base{Name: "ubuntu", Channel: "14.04"},
 				NetworkInterfaces: map[string]params.NetworkInterface{
 					"eth0": {
 						IPAddresses: []string{
@@ -70,6 +71,7 @@ func (*fakeStatusAPI) Status(c []string) (*params.FullStatus, error) {
 				},
 				InstanceId: "juju-badd06-1",
 				Series:     "trusty",
+				Base:       params.Base{Name: "ubuntu", Channel: "14.04"},
 				NetworkInterfaces: map[string]params.NetworkInterface{
 					"eth0": {
 						IPAddresses: []string{
@@ -93,6 +95,7 @@ func (*fakeStatusAPI) Status(c []string) (*params.FullStatus, error) {
 						},
 						InstanceId: "juju-badd06-1-lxd-0",
 						Series:     "trusty",
+						Base:       params.Base{Name: "ubuntu", Channel: "14.04"},
 						NetworkInterfaces: map[string]params.NetworkInterface{
 							"eth0": {
 								IPAddresses: []string{
@@ -137,7 +140,7 @@ func (s *MachineListCommandSuite) TestMachine(c *gc.C) {
 	context, err := cmdtesting.RunCommand(c, newMachineListCommand())
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(cmdtesting.Stdout(context), gc.Equals, ""+
-		"Machine  State    DNS       Inst id              Series  AZ         Message\n"+
+		"Machine  State    Address   Inst id              Series  AZ         Message\n"+
 		"0        started  10.0.0.1  juju-badd06-0        trusty  us-east-1  \n"+
 		"1        started  10.0.0.2  juju-badd06-1        trusty             \n"+
 		"1/lxd/0  pending  10.0.0.3  juju-badd06-1-lxd-0  trusty             \n"+

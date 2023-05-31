@@ -8,8 +8,11 @@ import (
 
 	"github.com/juju/charm/v8"
 	"github.com/juju/errors"
-	"github.com/juju/juju/cloud"
 	"github.com/juju/names/v4"
+
+	"github.com/juju/juju/cloud"
+	"github.com/juju/juju/controller"
+	"github.com/juju/juju/state/binarystorage"
 
 	"github.com/juju/juju/apiserver/common/storagecommon"
 	"github.com/juju/juju/core/instance"
@@ -20,18 +23,28 @@ import (
 	"github.com/juju/juju/state"
 )
 
+// StateBackend wraps a state.
+// TODO(juju3) - move to export_test
+// It's here because we need to for the client
+// facade for backwards compatibility.
+func StateBackend(st *state.State) Backend {
+	return &stateShim{st}
+}
+
 type Backend interface {
 	network.SpaceLookup
 
 	// Application returns a application state by name.
 	Application(string) (Application, error)
 	Machine(string) (Machine, error)
+	AllMachines() ([]Machine, error)
 	Unit(string) (Unit, error)
 	Model() (Model, error)
 	GetBlockForType(t state.BlockType) (state.Block, bool, error)
 	AddOneMachine(template state.MachineTemplate) (*state.Machine, error)
 	AddMachineInsideNewMachine(template, parentTemplate state.MachineTemplate, containerType instance.ContainerType) (*state.Machine, error)
 	AddMachineInsideMachine(template state.MachineTemplate, parentId string, containerType instance.ContainerType) (*state.Machine, error)
+	ToolsStorage() (binarystorage.StorageCloser, error)
 }
 
 type BackendState interface {
@@ -39,13 +52,23 @@ type BackendState interface {
 	MachineFromTag(string) (Machine, error)
 }
 
+type ControllerBackend interface {
+	ControllerTag() names.ControllerTag
+	ControllerConfig() (controller.Config, error)
+	APIHostPortsForAgents() ([]network.SpaceHostPorts, error)
+}
+
 type Pool interface {
 	GetModel(string) (Model, func(), error)
+	SystemState() (ControllerBackend, error)
 }
 
 type Model interface {
 	Name() string
 	UUID() string
+	ModelTag() names.ModelTag
+	ControllerUUID() string
+	Type() state.ModelType
 	Cloud() (cloud.Cloud, error)
 	CloudCredential() (state.Credential, bool, error)
 	CloudRegion() string
@@ -55,9 +78,12 @@ type Model interface {
 type Machine interface {
 	Id() string
 	Tag() names.Tag
+	SetPassword(string) error
+	HardwareCharacteristics() (*instance.HardwareCharacteristics, error)
 	Destroy() error
 	ForceDestroy(time.Duration) error
 	Series() string
+	Containers() ([]string, error)
 	Units() ([]Unit, error)
 	SetKeepInstance(keepInstance bool) error
 	CreateUpgradeSeriesLock([]string, string) error
@@ -71,6 +97,8 @@ type Machine interface {
 	UpgradeSeriesStatus() (model.UpgradeSeriesStatus, error)
 	SetUpgradeSeriesStatus(model.UpgradeSeriesStatus, string) error
 	ApplicationNames() ([]string, error)
+	InstanceStatus() (status.StatusInfo, error)
+	SetInstanceStatus(sInfo status.StatusInfo) error
 }
 
 type Application interface {
@@ -110,6 +138,18 @@ func (s stateShim) Machine(name string) (Machine, error) {
 	}, nil
 }
 
+func (s stateShim) AllMachines() ([]Machine, error) {
+	all, err := s.State.AllMachines()
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	result := make([]Machine, len(all))
+	for i, m := range all {
+		result[i] = machineShim{Machine: m}
+	}
+	return result, nil
+}
+
 func (s stateShim) Unit(name string) (Unit, error) {
 	u, err := s.State.Unit(name)
 	if err != nil {
@@ -126,6 +166,10 @@ func (s stateShim) Model() (Model, error) {
 
 type poolShim struct {
 	pool *state.StatePool
+}
+
+func (p *poolShim) SystemState() (ControllerBackend, error) {
+	return p.pool.SystemState()
 }
 
 func (p *poolShim) GetModel(uuid string) (Model, func(), error) {
@@ -181,13 +225,13 @@ type Unit interface {
 	Status() (status.StatusInfo, error)
 }
 
-type storageInterface interface {
+type StorageInterface interface {
 	storagecommon.StorageAccess
 	VolumeAccess() storagecommon.VolumeAccess
 	FilesystemAccess() storagecommon.FilesystemAccess
 }
 
-var getStorageState = func(st *state.State) (storageInterface, error) {
+var getStorageState = func(st *state.State) (StorageInterface, error) {
 	m, err := st.Model()
 	if err != nil {
 		return nil, err

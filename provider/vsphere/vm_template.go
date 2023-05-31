@@ -10,14 +10,12 @@ import (
 	"path"
 	"strings"
 
+	"github.com/juju/errors"
 	"github.com/vmware/govmomi/object"
 	"github.com/vmware/govmomi/vim25/types"
 
-	"github.com/juju/collections/set"
-	"github.com/juju/errors"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/imagemetadata"
-	"github.com/juju/juju/provider/common"
 	"github.com/juju/juju/provider/vsphere/internal/vsphereclient"
 )
 
@@ -42,7 +40,7 @@ type vmTemplateManager struct {
 // or if no "image-ids" entries exist, it will then try to find a previously imported
 // template via "image-download" simplestreams entries. As a last resort, it will try
 // to import a new template from simplestreams.
-func (v *vmTemplateManager) EnsureTemplate(ctx context.Context, series string, arches []string) (*object.VirtualMachine, string, error) {
+func (v *vmTemplateManager) EnsureTemplate(ctx context.Context, series string, agentArch string) (*object.VirtualMachine, string, error) {
 	// Attempt to find image in image-metadata
 	logger.Debugf("looking for local templates")
 	tpl, arch, err := v.findTemplate(ctx)
@@ -56,7 +54,7 @@ func (v *vmTemplateManager) EnsureTemplate(ctx context.Context, series string, a
 
 	logger.Debugf("looking for already imported templates for series %q", series)
 	// Attempt to find a previously imported instance template
-	importedTemplate, arch, err := v.getImportedTemplate(ctx, series, arches)
+	importedTemplate, arch, err := v.getImportedTemplate(ctx, series, agentArch)
 	if err == nil {
 		logger.Debugf("using already imported template for series %s", series)
 		return importedTemplate, arch, nil
@@ -69,7 +67,7 @@ func (v *vmTemplateManager) EnsureTemplate(ctx context.Context, series string, a
 	}
 	logger.Debugf("downloading and importing template from simplestreams")
 	// Last resort, download and import a template.
-	return v.downloadAndImportTemplate(ctx, series, arches)
+	return v.downloadAndImportTemplate(ctx, series, agentArch)
 }
 
 // findTemplate uses the imageMetadata provided to find a local template.
@@ -129,8 +127,8 @@ func (v *vmTemplateManager) getVMArch(ctx context.Context, vmObj *object.Virtual
 	return "", errors.NotFoundf("arch tag")
 }
 
-func (v *vmTemplateManager) getImportedTemplate(ctx context.Context, series string, arches []string) (*object.VirtualMachine, string, error) {
-	logger.Tracef("getImportedTemplate for series %q, arches %q", strings.Join(arches, ", "))
+func (v *vmTemplateManager) getImportedTemplate(ctx context.Context, series string, agentArch string) (*object.VirtualMachine, string, error) {
+	logger.Tracef("getImportedTemplate for series %q, arch %q", series, agentArch)
 	seriesTemplatesFolder := v.seriesTemplateFolder(series)
 	seriesTemplates, err := v.client.ListVMTemplates(ctx, path.Join(seriesTemplatesFolder, "*"))
 	if err != nil {
@@ -143,26 +141,25 @@ func (v *vmTemplateManager) getImportedTemplate(ctx context.Context, series stri
 	}
 	var vmTpl *object.VirtualMachine
 	var arch string
-	if len(arches) > 0 {
-		for _, item := range seriesTemplates {
-			arch, err = v.getVMArch(ctx, item)
-			if err != nil {
-				if errors.IsNotFound(err) {
-					logger.Debugf("failed find arch for template %q: %s", item.InventoryPath, err)
-				} else {
-					logger.Infof("failed to get arch for template %q: %s", item.InventoryPath, err)
-				}
-				continue
+	for _, item := range seriesTemplates {
+		arch, err = v.getVMArch(ctx, item)
+		if err != nil {
+			if errors.IsNotFound(err) {
+				logger.Debugf("failed find arch for template %q: %s", item.InventoryPath, err)
+			} else {
+				logger.Infof("failed to get arch for template %q: %s", item.InventoryPath, err)
 			}
-			if !set.NewStrings(arches...).Contains(arch) {
-				continue
-			}
-			vmTpl = item
-			break
+			continue
 		}
+		if agentArch != arch {
+			continue
+		}
+		vmTpl = item
+		break
 	}
 	if vmTpl == nil {
 		// Templates created by juju before 2.9, do not have an arch tag.
+		logger.Warningf("using default template since old templates do not contain arch")
 		vmTpl = seriesTemplates[0]
 	}
 
@@ -171,7 +168,7 @@ func (v *vmTemplateManager) getImportedTemplate(ctx context.Context, series stri
 
 func (v *vmTemplateManager) downloadAndImportTemplate(
 	ctx context.Context,
-	series string, arches []string,
+	series string, arch string,
 ) (*object.VirtualMachine, string, error) {
 
 	seriesTemplateFolder := v.seriesTemplateFolder(series)
@@ -184,9 +181,9 @@ func (v *vmTemplateManager) downloadAndImportTemplate(
 	if err != nil {
 		return nil, "", errors.Trace(err)
 	}
-	img, err := findImageMetadata(v.env, arches, series)
+	img, err := findImageMetadata(v.env, arch, series)
 	if err != nil {
-		return nil, "", common.ZoneIndependentError(err)
+		return nil, "", environs.ZoneIndependentError(err)
 	}
 
 	readOVA := func() (string, io.ReadCloser, error) {

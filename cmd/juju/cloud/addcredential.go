@@ -15,6 +15,7 @@ import (
 	"github.com/juju/names/v4"
 
 	apicloud "github.com/juju/juju/api/client/cloud"
+	"github.com/juju/juju/cloud"
 	jujucloud "github.com/juju/juju/cloud"
 	jujucmd "github.com/juju/juju/cmd"
 	"github.com/juju/juju/cmd/juju/common"
@@ -38,7 +39,7 @@ Providing the ` + "`-f <credentials.yaml>` " + `option switches to the
 non-interactive mode. <credentials.yaml> must be a path to a correctly 
 formatted YAML-formatted file. 
 
-Sample yaml file shows four credentials being stored against three clouds:
+Sample yaml file shows five credentials being stored against four clouds:
 
   credentials:
     aws:
@@ -53,12 +54,19 @@ Sample yaml file shows four credentials being stored against three clouds:
         application-password: <password>
         subscription-id: <uuid>
     lxd:
-      <credential-name>:
+      <credential-a>:
         auth-type: interactive
         trust-password: <password>
-      <credential-name>:
+      <credential-b>:
         auth-type: interactive
         trust-password: <password>
+    google:
+      <credential-name>:
+        auth-type: oauth2
+        project-id: <project-id>
+        private-key: <private-key>
+        client-email: <email>
+        client-id: <client-id>
 
 The <credential-name> parameter of each credential is arbitrary, but must
 be unique within each <cloud-name>. This allows allow each cloud to store 
@@ -95,7 +103,7 @@ Use --controller option to upload a credential to a controller.
 Use --client option to add a credential to the current client.
 
 Further help:
-Please visit https://discourse.jujucharms.com/t/1508 for cloud-specific
+Please visit https://discourse.charmhub.io/t/1508 for cloud-specific
 instructions.
 
 See also: 
@@ -128,9 +136,6 @@ type addCredentialCommand struct {
 	// These attributes are used when adding credentials to a controller.
 	remoteCloudFound  bool
 	credentialAPIFunc func() (CredentialAPI, error)
-
-	// existsLocally whether this credential already exists locally.
-	existsLocally bool
 }
 
 // NewAddCredentialCommand returns a command to add credential information.
@@ -273,6 +278,11 @@ func (c *addCredentialCommand) Run(ctxt *cmd.Context) error {
 		}
 		if !validAuthType(cred.AuthType()) {
 			return errors.Errorf("credential %q contains invalid auth type %q, valid auth types for cloud %q are %v", name, cred.AuthType(), c.CloudName, c.cloud.AuthTypes)
+		}
+
+		cred, err := cloud.ExpandFilePathsOfCredential(cred, schemas)
+		if err != nil {
+			return fmt.Errorf("expanding file paths for credential: %w", err)
 		}
 
 		// When in non-interactive mode we still sometimes want to finalize a
@@ -576,6 +586,9 @@ func (c *addCredentialCommand) promptFieldValue(p *interact.Pollster, attr jujuc
 	// We assume that Hidden, ExpandFilePath and FilePath are mutually
 	// exclusive here.
 	switch {
+	// Adds support for lp1988239. Order is important here!
+	case attr.Hidden && attr.ExpandFilePath:
+		return enterFile(name, attr.Description, p, true, attr.Optional)
 	case attr.Hidden:
 		return p.EnterPassword(name)
 	case attr.ExpandFilePath:

@@ -21,7 +21,6 @@ import (
 	"github.com/juju/juju/environs/instances"
 	"github.com/juju/juju/provider/common"
 	"github.com/juju/juju/provider/gce/google"
-	"github.com/juju/juju/tools"
 )
 
 // StartInstance implements environs.InstanceBroker.
@@ -30,17 +29,17 @@ func (env *environ) StartInstance(ctx context.ProviderCallContext, args environs
 
 	spec, err := buildInstanceSpec(env, ctx, args)
 	if err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 
 	if err := env.finishInstanceConfig(args, spec); err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 
 	// Validate availability zone.
 	volumeAttachmentsZone, err := volumeAttachmentsZone(args.VolumeAttachments)
 	if err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 	if err := validateAvailabilityZoneConsistency(args.AvailabilityZone, volumeAttachmentsZone); err != nil {
 		return nil, errors.Trace(err)
@@ -77,12 +76,7 @@ var getHardwareCharacteristics = func(env *environ, spec *instances.InstanceSpec
 // finishInstanceConfig updates args.InstanceConfig in place. Setting up
 // the API, StateServing, and SSHkeys information.
 func (env *environ) finishInstanceConfig(args environs.StartInstanceParams, spec *instances.InstanceSpec) error {
-	envTools, err := args.Tools.Match(tools.Filter{Arch: spec.Image.Arch})
-	if err != nil {
-		return errors.Errorf("chosen architecture %v not present in %v", spec.Image.Arch, machArches)
-	}
-
-	if err := args.InstanceConfig.SetTools(envTools); err != nil {
+	if err := args.InstanceConfig.SetTools(args.Tools); err != nil {
 		return errors.Trace(err)
 	}
 	return instancecfg.FinishInstanceConfig(args.InstanceConfig, env.Config())
@@ -97,12 +91,15 @@ func (env *environ) buildInstanceSpec(ctx context.ProviderCallContext, args envi
 		return nil, errors.Trace(err)
 	}
 
-	arches := args.Tools.Arches()
+	arch, err := args.Tools.OneArch()
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
 	spec, err := findInstanceSpec(
 		env, &instances.InstanceConstraint{
 			Region:      env.cloud.Region,
 			Series:      args.InstanceConfig.Series,
-			Arches:      arches,
+			Arch:        arch,
 			Constraints: args.Constraints,
 		},
 		args.ImageMetadata,
@@ -141,9 +138,12 @@ func (env *environ) imageURLBase(os jujuos.OSType) (string, error) {
 
 	switch os {
 	case jujuos.Ubuntu:
-		if env.Config().ImageStream() == "daily" {
+		switch env.Config().ImageStream() {
+		case "daily":
 			base = ubuntuDailyImageBasePath
-		} else {
+		case "pro":
+			base = ubuntuProImageBasePath
+		default:
 			base = ubuntuImageBasePath
 		}
 	case jujuos.Windows:
@@ -163,17 +163,17 @@ func (env *environ) newRawInstance(
 ) (_ *google.Instance, err error) {
 	hostname, err := env.namespace.Hostname(args.InstanceConfig.MachineId)
 	if err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 
 	os, err := series.GetOSFromSeries(args.InstanceConfig.Series)
 	if err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 
 	metadata, err := getMetadata(args, os)
 	if err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 	tags := []string{
 		env.globalFirewallName(),
@@ -182,7 +182,7 @@ func (env *environ) newRawInstance(
 
 	imageURLBase, err := env.imageURLBase(os)
 	if err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 
 	disks, err := getDisks(
@@ -192,7 +192,7 @@ func (env *environ) newRawInstance(
 		imageURLBase,
 	)
 	if err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 
 	allocatePublicIP := true

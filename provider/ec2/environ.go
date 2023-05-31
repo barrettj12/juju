@@ -25,6 +25,7 @@ import (
 	jujuhttp "github.com/juju/http/v2"
 	"github.com/juju/names/v4"
 	"github.com/juju/retry"
+	"github.com/juju/utils/v3/arch"
 	"github.com/juju/version/v2"
 	"github.com/kr/pretty"
 
@@ -35,6 +36,7 @@ import (
 	"github.com/juju/juju/core/constraints"
 	corecontext "github.com/juju/juju/core/context"
 	"github.com/juju/juju/core/instance"
+	corelogger "github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/network/firewall"
 	coreseries "github.com/juju/juju/core/series"
@@ -48,7 +50,6 @@ import (
 	"github.com/juju/juju/environs/tags"
 	"github.com/juju/juju/provider/common"
 	"github.com/juju/juju/storage"
-	"github.com/juju/juju/tools"
 )
 
 const (
@@ -259,12 +260,16 @@ var unsupportedConstraints = []string{
 // ConstraintsValidator is defined on the Environs interface.
 func (e *environ) ConstraintsValidator(ctx context.ProviderCallContext) (constraints.Validator, error) {
 	validator := constraints.NewValidator()
+	validator.RegisterVocabulary(
+		constraints.Arch,
+		[]string{arch.AMD64, arch.ARM64},
+	)
 	validator.RegisterConflicts(
 		[]string{constraints.InstanceType},
-		[]string{constraints.Mem, constraints.Cores, constraints.CpuPower})
+		[]string{constraints.Arch, constraints.Mem, constraints.Cores, constraints.CpuPower})
 	validator.RegisterUnsupported(unsupportedConstraints)
-	instanceTypes, err := e.supportedInstanceTypes(ctx)
 
+	instanceTypes, err := e.supportedInstanceTypes(ctx)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -273,21 +278,28 @@ func (e *environ) ConstraintsValidator(ctx context.ProviderCallContext) (constra
 	for i, itype := range instanceTypes {
 		instTypeNames[i] = itype.Name
 	}
-
 	validator.RegisterVocabulary(constraints.InstanceType, instTypeNames)
-	return validator, nil
-}
-
-func archMatches(arches []string, arch *string) bool {
-	if arch == nil {
-		return true
-	}
-	for _, a := range arches {
-		if a == *arch {
-			return true
+	validator.RegisterConflictResolver(constraints.InstanceType, constraints.Arch, func(attrValues map[string]interface{}) error {
+		instanceTypeName := attrValues[constraints.InstanceType].(string)
+		arch := attrValues[constraints.Arch].(string)
+		for _, itype := range instanceTypes {
+			if itype.Name != instanceTypeName {
+				continue
+			}
+			if itype.Arch != arch {
+				return fmt.Errorf("%v=%q expected %v=%q not %q",
+					constraints.InstanceType, instanceTypeName,
+					constraints.Arch, itype.Arch, arch)
+			}
+			// The instance-type and arch are a valid combination.
+			return nil
 		}
-	}
-	return false
+		// Should never get here as the instance type value should be already validated to be
+		// in instanceTypes.
+		return errors.NotFoundf("%v %q", constraints.InstanceType, instanceTypeName)
+	})
+
+	return validator, nil
 }
 
 var ec2AvailabilityZones = func(client Client, ctx stdcontext.Context, in *ec2.DescribeAvailabilityZonesInput, opts ...func(*ec2.Options)) (*ec2.DescribeAvailabilityZonesOutput, error) {
@@ -452,7 +464,7 @@ func (e *environ) PrecheckInstance(ctx context.ProviderCallContext, args environ
 		if itype.Name != *args.Constraints.InstanceType {
 			continue
 		}
-		if archMatches(itype.Arches, args.Constraints.Arch) {
+		if !args.Constraints.HasArch() || *args.Constraints.Arch == itype.Arch {
 			return nil
 		}
 	}
@@ -549,10 +561,10 @@ func (e *environ) StartInstance(
 		// If there is a problem with authentication/authorisation,
 		// we want a correctly typed error.
 		annotatedErr := errors.Annotate(maybeConvertCredentialError(received, ctx), annotation)
-		if common.IsCredentialNotValid(annotatedErr) {
+		if errors.Is(annotatedErr, common.ErrorCredentialNotValid) {
 			return annotatedErr
 		}
-		return common.ZoneIndependentError(annotatedErr)
+		return environs.ZoneIndependentError(annotatedErr)
 	}
 
 	wrapError := func(received error) error {
@@ -578,14 +590,18 @@ func (e *environ) StartInstance(
 		return nil, wrapError(err)
 	}
 
+	arch, err := args.Tools.OneArch()
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
 	spec, err := findInstanceSpec(
-		args.InstanceConfig.Controller != nil,
+		args.InstanceConfig.IsController(),
 		args.ImageMetadata,
 		instanceTypes,
 		&instances.InstanceConstraint{
 			Region:      e.cloud.Region,
 			Series:      args.InstanceConfig.Series,
-			Arches:      args.Tools.Arches(),
+			Arch:        arch,
 			Constraints: args.Constraints,
 			Storage:     []string{ssdStorage, ebsStorage},
 		},
@@ -595,20 +611,20 @@ func (e *environ) StartInstance(
 	}
 
 	if err := e.finishInstanceConfig(&args, spec); err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 
 	_ = callback(status.Allocating, "Making user data", nil)
 	userData, err := providerinit.ComposeUserData(args.InstanceConfig, nil, AmazonRenderer{})
 	if err != nil {
-		return nil, common.ZoneIndependentError(errors.Annotate(err, "constructing user data"))
+		return nil, environs.ZoneIndependentError(fmt.Errorf("constructing user data: %w", err))
 	}
 
 	logger.Debugf("ec2 user data; %d bytes", len(userData))
 	apiPorts := make([]int, 0, 2)
-	if args.InstanceConfig.Controller != nil {
-		apiPorts = append(apiPorts, args.InstanceConfig.Controller.Config.APIPort())
-		if args.InstanceConfig.Controller.Config.AutocertDNSName() != "" {
+	if args.InstanceConfig.IsController() {
+		apiPorts = append(apiPorts, args.InstanceConfig.ControllerConfig.APIPort())
+		if args.InstanceConfig.ControllerConfig.AutocertDNSName() != "" {
 			// Open port 80 as well as it handles Let's Encrypt HTTP challenge.
 			apiPorts = append(apiPorts, 80)
 		}
@@ -625,7 +641,7 @@ func (e *environ) StartInstance(
 	blockDeviceMappings, err := getBlockDeviceMappings(
 		args.Constraints,
 		args.InstanceConfig.Series,
-		args.InstanceConfig.Controller != nil,
+		args.InstanceConfig.IsController(),
 		args.RootDisk,
 	)
 	if err != nil {
@@ -651,7 +667,7 @@ func (e *environ) StartInstance(
 
 	subnetZones, err := getValidSubnetZoneMap(args)
 	if err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 
 	hasVPCID := isVPCIDSet(e.ecfg().vpcID())
@@ -773,17 +789,11 @@ func (e *environ) maybeAttachInstanceProfile(
 }
 
 func (e *environ) finishInstanceConfig(args *environs.StartInstanceParams, spec *instances.InstanceSpec) error {
-	matchingTools, err := args.Tools.Match(tools.Filter{Arch: spec.Image.Arch})
-	if err != nil {
-		return errors.Errorf("chosen architecture %v for image %q not present in %v",
-			spec.Image.Arch, spec.Image.Id, args.Tools.Arches())
-	}
-
 	if spec.InstanceType.Deprecated {
 		logger.Infof("deprecated instance type specified: %s", spec.InstanceType.Name)
 	}
 
-	if err := args.InstanceConfig.SetTools(matchingTools); err != nil {
+	if err := args.InstanceConfig.SetTools(args.Tools); err != nil {
 		return errors.Trace(err)
 	}
 
@@ -1479,7 +1489,7 @@ func (e *environ) networkInterfacesForInstance(ctx context.ProviderCallContext, 
 	retryStrategy := shortRetryStrategy
 	retryStrategy.Stop = abortRetries
 	retryStrategy.IsFatalError = func(err error) bool {
-		return common.IsCredentialNotValid(err)
+		return errors.Is(err, common.ErrorCredentialNotValid)
 	}
 	retryStrategy.NotifyFunc = func(lastError error, attempt int) {
 		logger.Errorf("failed to get instance %q interfaces: %v (retrying)", instId, lastError)
@@ -1561,12 +1571,14 @@ func mapNetworkInterface(iface types.NetworkInterface, subnet types.Subnet) netw
 	}
 
 	for _, privAddr := range iface.PrivateIpAddresses {
-		if ip := aws.ToString(privAddr.Association.PublicIp); ip != "" {
-			ni.ShadowAddresses = append(ni.ShadowAddresses, network.NewMachineAddress(
-				ip,
-				network.WithScope(network.ScopePublic),
-				network.WithConfigType(network.ConfigDHCP),
-			).AsProviderAddress())
+		if privAddr.Association != nil {
+			if ip := aws.ToString(privAddr.Association.PublicIp); ip != "" {
+				ni.ShadowAddresses = append(ni.ShadowAddresses, network.NewMachineAddress(
+					ip,
+					network.WithScope(network.ScopePublic),
+					network.WithConfigType(network.ConfigDHCP),
+				).AsProviderAddress())
+			}
 		}
 
 		if aws.ToString(privAddr.PrivateIpAddress) == privateAddress {
@@ -1966,6 +1978,7 @@ func rulesToIPPerms(rules firewall.IngressRules) []types.IpPermission {
 		}
 		if len(r.SourceCIDRs) == 0 {
 			ipPerms[i].IpRanges = []types.IpRange{{CidrIp: aws.String(defaultRouteCIDRBlock)}}
+			ipPerms[i].Ipv6Ranges = []types.Ipv6Range{{CidrIpv6: aws.String(defaultRouteIPv6CIDRBlock)}}
 		} else {
 			for _, cidr := range r.SourceCIDRs.SortedValues() {
 				// CIDRs are pre-validated; if an invalid CIDR
@@ -2057,6 +2070,7 @@ func (e *environ) ingressRulesInGroup(ctx context.ProviderCallContext, name stri
 		}
 		if len(sourceCIDRs) == 0 {
 			sourceCIDRs = append(sourceCIDRs, defaultRouteCIDRBlock)
+			sourceCIDRs = append(sourceCIDRs, defaultRouteIPv6CIDRBlock)
 		}
 		portRange := network.PortRange{
 			Protocol: aws.ToString(p.IpProtocol),
@@ -2333,7 +2347,7 @@ var deleteSecurityGroupInsistently = func(client SecurityGroupCleaner, ctx conte
 			return errors.Trace(maybeConvertCredentialError(err, ctx))
 		},
 		IsFatalError: func(err error) bool {
-			return common.IsCredentialNotValid(err)
+			return errors.Is(err, common.ErrorCredentialNotValid)
 		},
 		NotifyFunc: func(err error, attempt int) {
 			logger.Debugf("deleting security group %q, attempt %d (%v)", aws.ToString(g.GroupName), attempt, err)
@@ -2681,7 +2695,7 @@ func isSubnetConstrainedError(err error) bool {
 // its code, otherwise it returns the empty string.
 func ec2ErrCode(err error) string {
 	var apiErr smithy.APIError
-	if stderrors.As(errors.Cause(err), &apiErr) {
+	if stderrors.As(err, &apiErr) {
 		return apiErr.ErrorCode()
 	}
 	return ""
@@ -2717,11 +2731,6 @@ func (e *environ) hasDefaultVPC(ctx context.ProviderCallContext) (bool, error) {
 // AreSpacesRoutable implements NetworkingEnviron.
 func (*environ) AreSpacesRoutable(ctx context.ProviderCallContext, space1, space2 *environs.ProviderSpaceInfo) (bool, error) {
 	return false, nil
-}
-
-// SSHAddresses implements environs.SSHAddresses.
-func (*environ) SSHAddresses(ctx context.ProviderCallContext, addresses network.SpaceAddresses) (network.SpaceAddresses, error) {
-	return addresses, nil
 }
 
 // SuperSubnets implements NetworkingEnviron.SuperSubnets
@@ -2786,7 +2795,7 @@ func (e *environ) SetCloudSpec(ctx stdcontext.Context, spec environscloudspec.Cl
 	}
 
 	httpClient := jujuhttp.NewClient(
-		jujuhttp.WithLogger(logger.Child("http")),
+		jujuhttp.WithLogger(logger.ChildWithLabels("http", corelogger.HTTP)),
 	)
 
 	var err error

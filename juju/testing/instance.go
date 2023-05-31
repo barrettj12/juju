@@ -7,6 +7,7 @@ import (
 	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 	jc "github.com/juju/testing/checkers"
+	"github.com/juju/utils/v3/arch"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/api"
@@ -170,6 +171,10 @@ func FillInStartInstanceParams(env environs.Environ, machineId string, isControl
 	}
 	if params.Constraints.Arch != nil {
 		filter.Arch = *params.Constraints.Arch
+	} else {
+		// This deviates slightly from standard behaviour when bootstrapping for
+		// convenience so that by default instances start with a compatible arch
+		filter.Arch = arch.HostArch()
 	}
 	streams := tools.PreferredStreams(&agentVersion, env.Config().Development(), env.Config().AgentStream())
 	ss := simplestreams.NewSimpleStreams(sstesting.TestDataSourceFactory())
@@ -183,7 +188,7 @@ func FillInStartInstanceParams(env environs.Environ, machineId string, isControl
 			env,
 			ss,
 			[]string{preferredSeries},
-			possibleTools.Arches(),
+			[]string{filter.Arch},
 			&params.ImageMetadata,
 		); err != nil {
 			return errors.Trace(err)
@@ -192,25 +197,27 @@ func FillInStartInstanceParams(env environs.Environ, machineId string, isControl
 
 	machineNonce := "fake_nonce"
 	apiInfo := FakeAPIInfo(machineId)
+	base, err := series.GetBaseFromSeries(preferredSeries)
+	if err != nil {
+		return errors.Trace(err)
+	}
 	instanceConfig, err := instancecfg.NewInstanceConfig(
 		testing.ControllerTag,
 		machineId,
 		machineNonce,
 		imagemetadata.ReleasedStream,
-		preferredSeries,
+		base,
 		apiInfo,
 	)
 	if err != nil {
 		return errors.Trace(err)
 	}
 	if isController {
-		instanceConfig.Controller = &instancecfg.ControllerConfig{
-			Config: testing.FakeControllerConfig(),
-		}
+		instanceConfig.ControllerConfig = testing.FakeControllerConfig()
 		instanceConfig.Jobs = []model.MachineJob{model.JobHostUnits, model.JobManageModel}
 	}
 	cfg := env.Config()
-	instanceConfig.Tags = instancecfg.InstanceTags(env.Config().UUID(), params.ControllerUUID, cfg, nil)
+	instanceConfig.Tags = instancecfg.InstanceTags(env.Config().UUID(), params.ControllerUUID, cfg, false)
 	params.Tools = possibleTools
 	params.InstanceConfig = instanceConfig
 	if params.StatusCallback == nil {
