@@ -12,15 +12,16 @@ import (
 
 var logger = loggo.GetLogger("juju.plugins.waitfor")
 
-var waitForDoc = `
+var (
+	waitForDoc = `
 Waits for a specified model, machine, application or unit to reach a state
-defined by the supplied query.
+defined by the supplied query.`
 
-Examples:
-	juju wait-for unit mysql/0
-	juju wait-for application mysql --query='name=="mysql" && (status=="active" || status=="idle")'
-
-`
+	waitForExamples = `
+    juju wait-for unit mysql/0
+    juju wait-for application mysql --query='name=="mysql" && (status=="active" || status=="idle")'
+`[1:]
+)
 
 // NewWaitForCommand creates the wait-for supercommand and registers the
 // subcommands that it supports.
@@ -29,7 +30,9 @@ func NewWaitForCommand() cmd.Command {
 		Name:        "wait-for",
 		UsagePrefix: "juju",
 		Doc:         waitForDoc,
-		Purpose:     "Wait for an entity to reach a specified state."})
+		Purpose:     "Wait for an entity to reach a specified state.",
+		Examples:    waitForExamples,
+	})
 
 	waitFor.Register(newApplicationCommand())
 	waitFor.Register(newMachineCommand())
