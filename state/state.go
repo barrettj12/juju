@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/juju/charm/v11"
 	"github.com/juju/clock"
 	"github.com/juju/collections/set"
@@ -1525,9 +1526,40 @@ func (st *State) processCommonModelApplicationArgs(args *AddApplicationArgs) (Ba
 }
 
 func (st *State) processIAASModelApplicationArgs(args *AddApplicationArgs) error {
-	appBase, err := st.processCommonModelApplicationArgs(args)
-	if err != nil {
-		return errors.Trace(err)
+	var appBase Base
+
+	// If base was not specified but we have specified a machine placement, then
+	// use the base of the specified machine.
+	// TODO: what about arch? this is just base?
+	logger.Criticalf("processIAASModelApplicationArgs: %v", spew.Sdump(args))
+	if args.CharmOrigin.Platform == nil {
+		// Check if we have a machine placement
+		for _, placement := range args.Placement {
+			data, err := st.parsePlacement(placement)
+			if err != nil {
+				logger.Errorf("couldn't parse placement %q: %v", placement, err)
+				continue
+			}
+			if data.placementType() != machinePlacement {
+				continue
+			}
+
+			m, err := st.Machine(data.machineId)
+			if err != nil {
+				logger.Errorf("couldn't get machine %q: %v", data.machineId, err)
+				continue
+			}
+			appBase = m.doc.Base
+			break
+		}
+	}
+
+	if appBase == (Base{}) {
+		var err error
+		appBase, err = st.processCommonModelApplicationArgs(args)
+		if err != nil {
+			return errors.Trace(err)
+		}
 	}
 
 	storagePools := make(set.Strings)
