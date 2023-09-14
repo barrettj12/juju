@@ -113,7 +113,6 @@ func (s *ManifoldsSuite) TestManifoldNamesColocatedController(c *gc.C) {
 
 		"caas-unit-termination-worker",
 		"caas-units-manager",
-		"controller-charm",
 		"secret-drain-worker",
 		"caas-zombie-prober",
 
