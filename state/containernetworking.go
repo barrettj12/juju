@@ -14,6 +14,7 @@ import (
 // AutoConfigureContainerNetworking tries to set up best container networking available
 // for the specific model if user hasn't set anything.
 func (m *Model) AutoConfigureContainerNetworking(environ environs.BootstrapEnviron, providerConfigSchemaGetter config.ConfigSchemaSourceGetter) error {
+	// TODO: delete this method??
 	updateAttrs := make(map[string]interface{})
 	modelConfig, err := m.ModelConfig(stdcontext.Background())
 	if err != nil {

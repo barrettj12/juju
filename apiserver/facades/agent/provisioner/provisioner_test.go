@@ -11,7 +11,6 @@ import (
 
 	"github.com/juju/errors"
 	"github.com/juju/names/v5"
-	"github.com/juju/proxy"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/worker/v4/workertest"
 	"go.uber.org/mock/gomock"
@@ -26,15 +25,16 @@ import (
 	apiservertesting "github.com/juju/juju/apiserver/testing"
 	"github.com/juju/juju/controller"
 	"github.com/juju/juju/core/constraints"
+	"github.com/juju/juju/core/containermanager"
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/model"
+	modeltesting "github.com/juju/juju/core/model/testing"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/environs/envcontext"
 	environtesting "github.com/juju/juju/environs/testing"
 	"github.com/juju/juju/internal/charm"
-	"github.com/juju/juju/internal/container"
 	loggertesting "github.com/juju/juju/internal/logger/testing"
 	"github.com/juju/juju/internal/servicefactory"
 	"github.com/juju/juju/internal/storage"
@@ -47,6 +47,8 @@ import (
 	coretesting "github.com/juju/juju/testing"
 	"github.com/juju/juju/testing/factory"
 )
+
+//go:generate go run go.uber.org/mock/mockgen -typed -package mocks -destination mocks/service_mock.go github.com/juju/juju/apiserver/facades/agent/provisioner AgentProvisionerService,KeyUpdaterService
 
 func TestPackage(t *stdtesting.T) {
 	coretesting.MgoTestPackage(t)
@@ -143,7 +145,7 @@ func (s *withoutControllerSuite) TestProvisionerFailsWithNonMachineAgentNonManag
 	anAuthorizer.Controller = true
 	// Works with a controller, which is not a machine agent.
 	st := s.ControllerModel(c).State()
-	aProvisioner, err := provisioner.NewProvisionerAPI(context.Background(), facadetest.ModelContext{
+	aProvisioner, err := provisioner.MakeProvisionerAPI(context.Background(), facadetest.ModelContext{
 		Auth_:           anAuthorizer,
 		State_:          st,
 		StatePool_:      s.StatePool(),
@@ -156,7 +158,7 @@ func (s *withoutControllerSuite) TestProvisionerFailsWithNonMachineAgentNonManag
 
 	// But fails with neither a machine agent or a controller.
 	anAuthorizer.Controller = false
-	aProvisioner, err = provisioner.NewProvisionerAPI(context.Background(), facadetest.ModelContext{
+	aProvisioner, err = provisioner.MakeProvisionerAPI(context.Background(), facadetest.ModelContext{
 		Auth_:           anAuthorizer,
 		State_:          st,
 		StatePool_:      s.StatePool(),
@@ -235,7 +237,7 @@ func (s *withoutControllerSuite) TestLifeAsMachineAgent(c *gc.C) {
 	anAuthorizer.Controller = false
 	anAuthorizer.Tag = s.machines[0].Tag()
 	st := s.ControllerModel(c).State()
-	aProvisioner, err := provisioner.NewProvisionerAPI(context.Background(), facadetest.ModelContext{
+	aProvisioner, err := provisioner.MakeProvisionerAPI(context.Background(), facadetest.ModelContext{
 		Auth_:           anAuthorizer,
 		State_:          st,
 		StatePool_:      s.StatePool(),
@@ -596,7 +598,7 @@ func (s *withoutControllerSuite) TestMachinesWithTransientErrorsPermission(c *gc
 	anAuthorizer := s.authorizer
 	anAuthorizer.Controller = false
 	anAuthorizer.Tag = names.NewMachineTag("1")
-	aProvisioner, err := provisioner.NewProvisionerAPI(context.Background(), facadetest.ModelContext{
+	aProvisioner, err := provisioner.MakeProvisionerAPI(context.Background(), facadetest.ModelContext{
 		Auth_:           anAuthorizer,
 		State_:          s.ControllerModel(c).State(),
 		StatePool_:      s.StatePool(),
@@ -800,7 +802,7 @@ func (s *withoutControllerSuite) TestModelConfigNonManager(c *gc.C) {
 	anAuthorizer := s.authorizer
 	anAuthorizer.Tag = names.NewMachineTag("1")
 	anAuthorizer.Controller = false
-	aProvisioner, err := provisioner.NewProvisionerAPI(context.Background(), facadetest.ModelContext{
+	aProvisioner, err := provisioner.MakeProvisionerAPI(context.Background(), facadetest.ModelContext{
 		Auth_:           anAuthorizer,
 		State_:          s.ControllerModel(c).State(),
 		StatePool_:      s.StatePool(),
@@ -1103,7 +1105,7 @@ func (s *withoutControllerSuite) TestDistributionGroupMachineAgentAuth(c *gc.C) 
 	anAuthorizer := s.authorizer
 	anAuthorizer.Tag = names.NewMachineTag("1")
 	anAuthorizer.Controller = false
-	provisioner, err := provisioner.NewProvisionerAPI(context.Background(), facadetest.ModelContext{
+	provisioner, err := provisioner.MakeProvisionerAPI(context.Background(), facadetest.ModelContext{
 		Auth_:           anAuthorizer,
 		State_:          s.ControllerModel(c).State(),
 		StatePool_:      s.StatePool(),
@@ -1230,7 +1232,7 @@ func (s *withoutControllerSuite) TestDistributionGroupByMachineIdMachineAgentAut
 	anAuthorizer := s.authorizer
 	anAuthorizer.Tag = names.NewMachineTag("1")
 	anAuthorizer.Controller = false
-	provisioner, err := provisioner.NewProvisionerAPI(context.Background(), facadetest.ModelContext{
+	provisioner, err := provisioner.MakeProvisionerAPI(context.Background(), facadetest.ModelContext{
 		Auth_:           anAuthorizer,
 		State_:          s.ControllerModel(c).State(),
 		StatePool_:      s.StatePool(),
@@ -1473,7 +1475,7 @@ func (s *withoutControllerSuite) TestWatchModelMachines(c *gc.C) {
 	anAuthorizer := s.authorizer
 	anAuthorizer.Tag = names.NewMachineTag("1")
 	anAuthorizer.Controller = false
-	aProvisioner, err := provisioner.NewProvisionerAPI(context.Background(), facadetest.ModelContext{
+	aProvisioner, err := provisioner.MakeProvisionerAPI(context.Background(), facadetest.ModelContext{
 		Auth_:           anAuthorizer,
 		State_:          s.ControllerModel(c).State(),
 		StatePool_:      s.StatePool(),
@@ -1486,39 +1488,6 @@ func (s *withoutControllerSuite) TestWatchModelMachines(c *gc.C) {
 	result, err := aProvisioner.WatchModelMachines(context.Background())
 	c.Assert(err, gc.ErrorMatches, "permission denied")
 	c.Assert(result, gc.DeepEquals, params.StringsWatchResult{})
-}
-
-func (s *provisionerSuite) getManagerConfig(c *gc.C, typ instance.ContainerType) map[string]string {
-	args := params.ContainerManagerConfigParams{Type: typ}
-	results, err := s.provisioner.ContainerManagerConfig(context.Background(), args)
-	c.Assert(err, jc.ErrorIsNil)
-	return results.ManagerConfig
-}
-
-func (s *withoutControllerSuite) TestContainerManagerConfigDefaults(c *gc.C) {
-	cfg := s.getManagerConfig(c, instance.LXD)
-	c.Assert(cfg, jc.DeepEquals, map[string]string{
-		container.ConfigModelUUID:        coretesting.ModelTag.Id(),
-		config.ContainerImageStreamKey:   "released",
-		config.ContainerNetworkingMethod: config.ConfigDefaults()[config.ContainerNetworkingMethod].(string),
-		config.LXDSnapChannel:            "5.0/stable",
-	})
-}
-
-func (s *withoutControllerSuite) TestContainerManagerConfigDefaultMetadataDisabled(c *gc.C) {
-	attrs := map[string]interface{}{
-		"container-image-metadata-defaults-disabled": true,
-	}
-	err := s.ControllerModel(c).UpdateModelConfig(s.ConfigSchemaSourceGetter(c), attrs, nil)
-	c.Assert(err, jc.ErrorIsNil)
-	cfg := s.getManagerConfig(c, instance.LXD)
-	c.Assert(cfg, jc.DeepEquals, map[string]string{
-		container.ConfigModelUUID:                        coretesting.ModelTag.Id(),
-		config.ContainerImageStreamKey:                   "released",
-		config.ContainerImageMetadataDefaultsDisabledKey: "true",
-		config.ContainerNetworkingMethod:                 config.ConfigDefaults()[config.ContainerNetworkingMethod].(string),
-		config.LXDSnapChannel:                            "5.0/stable",
-	})
 }
 
 func (s *withoutControllerSuite) TestWatchMachineErrorRetry(c *gc.C) {
@@ -1545,7 +1514,7 @@ func (s *withoutControllerSuite) TestWatchMachineErrorRetry(c *gc.C) {
 	anAuthorizer := s.authorizer
 	anAuthorizer.Tag = names.NewMachineTag("1")
 	anAuthorizer.Controller = false
-	aProvisioner, err := provisioner.NewProvisionerAPI(context.Background(), facadetest.ModelContext{
+	aProvisioner, err := provisioner.MakeProvisionerAPI(context.Background(), facadetest.ModelContext{
 		Auth_:           anAuthorizer,
 		State_:          s.ControllerModel(c).State(),
 		StatePool_:      s.StatePool(),
@@ -1595,108 +1564,6 @@ func (s *withoutControllerSuite) TestMarkMachinesForRemoval(c *gc.C) {
 	c.Check(removals, jc.SameContents, []string{"0", "2"})
 }
 
-func (s *withoutControllerSuite) TestContainerConfig(c *gc.C) {
-	attrs := map[string]any{
-		"juju-http-proxy":              "http://proxy.example.com:9000",
-		"apt-https-proxy":              "https://proxy.example.com:9000",
-		"allow-lxd-loop-mounts":        true,
-		"apt-mirror":                   "http://example.mirror.com",
-		"snap-https-proxy":             "https://snap-proxy.example.com:9000",
-		"snap-store-assertions":        "BLOB",
-		"snap-store-proxy":             "b4dc0ffee",
-		"cloudinit-userdata":           validCloudInitUserData,
-		"container-inherit-properties": "ca-certs,apt-primary",
-	}
-	err := s.ControllerModel(c).UpdateModelConfig(s.ConfigSchemaSourceGetter(c), attrs, nil)
-	c.Assert(err, jc.ErrorIsNil)
-	expectedAPTProxy := proxy.Settings{
-		Http:    "http://proxy.example.com:9000",
-		Https:   "https://proxy.example.com:9000",
-		NoProxy: "127.0.0.1,localhost,::1",
-	}
-
-	expectedProxy := proxy.Settings{
-		Http:    "http://proxy.example.com:9000",
-		NoProxy: "127.0.0.1,localhost,::1",
-	}
-
-	expectedSnapProxy := proxy.Settings{
-		Https: "https://snap-proxy.example.com:9000",
-	}
-
-	cfg, err := s.ControllerModel(c).ModelConfig(context.Background())
-	c.Assert(err, jc.ErrorIsNil)
-	results, err := s.provisioner.ContainerConfig(context.Background())
-	c.Check(err, jc.ErrorIsNil)
-	c.Check(results.UpdateBehavior, gc.Not(gc.IsNil))
-	c.Check(results.ProviderType, gc.Equals, "dummy")
-	// We are looking to see here that the controller config system keys are
-	// being concatenated with the model config authorised keys in the return
-	// value. Because of how controller config works we can only inject these in
-	// SetupTest.
-	c.Check(results.AuthorizedKeys, gc.Equals, cfg.AuthorizedKeys()+"\ntestSystemSSH")
-	c.Check(results.SSLHostnameVerification, jc.IsTrue)
-	c.Check(results.LegacyProxy.HasProxySet(), jc.IsFalse)
-	c.Check(results.JujuProxy, gc.DeepEquals, expectedProxy)
-	c.Check(results.AptProxy, gc.DeepEquals, expectedAPTProxy)
-	c.Check(results.AptMirror, gc.DeepEquals, "http://example.mirror.com")
-	c.Check(results.SnapProxy, gc.DeepEquals, expectedSnapProxy)
-	c.Check(results.SnapStoreAssertions, gc.Equals, "BLOB")
-	c.Check(results.SnapStoreProxyID, gc.Equals, "b4dc0ffee")
-	c.Check(results.CloudInitUserData, gc.DeepEquals, map[string]any{
-		"packages":        []any{"python-keystoneclient", "python-glanceclient"},
-		"preruncmd":       []any{"mkdir /tmp/preruncmd", "mkdir /tmp/preruncmd2"},
-		"postruncmd":      []any{"mkdir /tmp/postruncmd", "mkdir /tmp/postruncmd2"},
-		"package_upgrade": false})
-	c.Check(results.ContainerInheritProperties, gc.DeepEquals, "ca-certs,apt-primary")
-}
-
-func (s *withoutControllerSuite) TestContainerConfigLegacy(c *gc.C) {
-	attrs := map[string]any{
-		"http-proxy":                   "http://proxy.example.com:9000",
-		"apt-https-proxy":              "https://proxy.example.com:9000",
-		"allow-lxd-loop-mounts":        true,
-		"apt-mirror":                   "http://example.mirror.com",
-		"cloudinit-userdata":           validCloudInitUserData,
-		"container-inherit-properties": "ca-certs,apt-primary",
-	}
-	err := s.ControllerModel(c).UpdateModelConfig(s.ConfigSchemaSourceGetter(c), attrs, nil)
-	c.Assert(err, jc.ErrorIsNil)
-	expectedAPTProxy := proxy.Settings{
-		Http:    "http://proxy.example.com:9000",
-		Https:   "https://proxy.example.com:9000",
-		NoProxy: "127.0.0.1,localhost,::1",
-	}
-
-	expectedProxy := proxy.Settings{
-		Http:    "http://proxy.example.com:9000",
-		NoProxy: "127.0.0.1,localhost,::1",
-	}
-
-	cfg, err := s.ControllerModel(c).ModelConfig(context.Background())
-	c.Assert(err, jc.ErrorIsNil)
-	results, err := s.provisioner.ContainerConfig(context.Background())
-	c.Check(err, jc.ErrorIsNil)
-	c.Check(results.UpdateBehavior, gc.Not(gc.IsNil))
-	c.Check(results.ProviderType, gc.Equals, "dummy")
-	// We are looking to see here that the controller config system keys are
-	// being concatenated with the model config authorised keys in the return
-	// value. Because of how controller config works we can only inject these in
-	// SetupTest.
-	c.Check(results.AuthorizedKeys, gc.Equals, cfg.AuthorizedKeys()+"\ntestSystemSSH")
-	c.Check(results.SSLHostnameVerification, jc.IsTrue)
-	c.Check(results.LegacyProxy, gc.DeepEquals, expectedProxy)
-	c.Check(results.JujuProxy.HasProxySet(), jc.IsFalse)
-	c.Check(results.AptProxy, gc.DeepEquals, expectedAPTProxy)
-	c.Check(results.AptMirror, gc.DeepEquals, "http://example.mirror.com")
-	c.Check(results.CloudInitUserData, gc.DeepEquals, map[string]any{
-		"packages":        []any{"python-keystoneclient", "python-glanceclient"},
-		"preruncmd":       []any{"mkdir /tmp/preruncmd", "mkdir /tmp/preruncmd2"},
-		"postruncmd":      []any{"mkdir /tmp/postruncmd", "mkdir /tmp/postruncmd2"},
-		"package_upgrade": false})
-	c.Check(results.ContainerInheritProperties, gc.DeepEquals, "ca-certs,apt-primary")
-}
-
 func (s *withoutControllerSuite) TestSetSupportedContainers(c *gc.C) {
 	args := params.MachineContainersParams{Params: []params.MachineContainers{{
 		MachineTag:     "machine-0",
@@ -1729,7 +1596,7 @@ func (s *withoutControllerSuite) TestSetSupportedContainersPermissions(c *gc.C) 
 	anAuthorizer := s.authorizer
 	anAuthorizer.Controller = false
 	anAuthorizer.Tag = s.machines[0].Tag()
-	aProvisioner, err := provisioner.NewProvisionerAPI(context.Background(), facadetest.ModelContext{
+	aProvisioner, err := provisioner.MakeProvisionerAPI(context.Background(), facadetest.ModelContext{
 		Auth_:           anAuthorizer,
 		State_:          s.ControllerModel(c).State(),
 		StatePool_:      s.StatePool(),
@@ -1882,31 +1749,6 @@ func (s *withControllerSuite) TestCACert(c *gc.C) {
 	})
 }
 
-type withImageMetadataSuite struct {
-	provisionerSuite
-}
-
-var _ = gc.Suite(&withImageMetadataSuite{})
-
-func (s *withImageMetadataSuite) SetUpTest(c *gc.C) {
-	s.ControllerModelConfigAttrs = map[string]any{
-		config.ContainerImageStreamKey:      "daily",
-		config.ContainerImageMetadataURLKey: "https://images.linuxcontainers.org/",
-	}
-	s.setUpTest(c, false)
-}
-
-func (s *withImageMetadataSuite) TestContainerManagerConfigImageMetadata(c *gc.C) {
-	cfg := s.getManagerConfig(c, instance.LXD)
-	c.Assert(cfg, jc.DeepEquals, map[string]string{
-		container.ConfigModelUUID:           coretesting.ModelTag.Id(),
-		config.ContainerImageStreamKey:      "daily",
-		config.ContainerImageMetadataURLKey: "https://images.linuxcontainers.org/",
-		config.LXDSnapChannel:               "5.0/stable",
-		config.ContainerNetworkingMethod:    config.ConfigDefaults()[config.ContainerNetworkingMethod].(string),
-	})
-}
-
 // TODO(jam): 2017-02-15 We seem to be lacking most of direct unit tests around ProcessOneContainer
 // Some of the use cases we need to be testing are:
 // 1) Provider can allocate addresses, should result in a container with
@@ -1935,6 +1777,9 @@ type provisionerMockSuite struct {
 	unit        *mocks.MockUnit
 	application *mocks.MockApplication
 	charm       *mocks.MockCharm
+
+	agentProvisionerService *mocks.MockAgentProvisionerService
+	keyUpdaterService       *mocks.MockKeyUpdaterService
 }
 
 var _ = gc.Suite(&provisionerMockSuite{})
@@ -2083,6 +1928,78 @@ func (s *provisionerMockSuite) expectCharmLXDProfiles(ctrl *gomock.Controller) {
 	s.application.EXPECT().Charm().Return(s.charm, false, nil)
 }
 
+func (s *provisionerMockSuite) TestContainerManagerConfig(c *gc.C) {
+	defer s.setup(c).Finish()
+	api := &provisioner.ProvisionerAPI{
+		AgentProvisionerService: s.agentProvisionerService,
+	}
+
+	modelID := modeltesting.GenModelUUID(c)
+	s.agentProvisionerService.EXPECT().ContainerManagerConfigForType(gomock.Any(), instance.LXD).
+		Return(containermanager.Config{
+			ModelID:                  modelID,
+			ImageMetadataURL:         "https://images.linuxcontainers.org/",
+			ImageStream:              "released",
+			LXDSnapChannel:           "5.0/stable",
+			MetadataDefaultsDisabled: true,
+			NetworkingMethod:         containermanager.NetworkingMethodProvider,
+		}, nil)
+
+	containerManagerConfig, err := api.ContainerManagerConfig(context.Background(),
+		params.ContainerManagerConfigParams{Type: instance.LXD},
+	)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Check(containerManagerConfig, jc.DeepEquals, params.ContainerManagerConfig{map[string]string{
+		"model-uuid":                                 modelID.String(),
+		"lxd-snap-channel":                           "5.0/stable",
+		"container-image-metadata-url":               "https://images.linuxcontainers.org/",
+		"container-image-metadata-defaults-disabled": "true",
+		"container-image-stream":                     "released",
+		"container-networking-method":                "provider",
+	}})
+}
+
+func (s *provisionerMockSuite) TestContainerConfig(c *gc.C) {
+	defer s.setup(c).Finish()
+	api := &provisioner.ProvisionerAPI{
+		AgentProvisionerService: s.agentProvisionerService,
+		KeyUpdaterService:       s.keyUpdaterService,
+	}
+
+	s.agentProvisionerService.EXPECT().ContainerConfig(gomock.Any()).Return(params.ContainerConfig{
+		ProviderType:               "ec2",
+		SSLHostnameVerification:    true,
+		SnapStoreAssertions:        "trust us",
+		SnapStoreProxyID:           "42",
+		SnapStoreProxyURL:          "http://snap-store-proxy",
+		AptMirror:                  "http://my.archive.ubuntu.com",
+		ContainerInheritProperties: "ca-certs,apt-primary",
+	}, nil)
+	s.keyUpdaterService.EXPECT().GetInitialAuthorisedKeysForContainer(gomock.Any()).Return([]string{
+		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN8h8XBpjS9aBUG5cdoSWubs7wT2Lc/BEZIUQCqoaOZR juju-client-key",
+		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN8h8XBpjS9aBUG5cdoSWubs7wT2Lc/BEZIUQCqoaOZR juju-system-key",
+		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN8h8XBpjS9aBUG5cdoSWubs7wT2Lc/BEZIUQCqoaOZR foo-key",
+		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN8h8XBpjS9aBUG5cdoSWubs7wT2Lc/BEZIUQCqoaOZR bar-key",
+	}, nil)
+
+	containerManagerConfig, err := api.ContainerConfig(context.Background())
+	c.Assert(err, jc.ErrorIsNil)
+	c.Check(containerManagerConfig, jc.DeepEquals, params.ContainerConfig{
+		ProviderType:               "ec2",
+		SSLHostnameVerification:    true,
+		SnapStoreAssertions:        "trust us",
+		SnapStoreProxyID:           "42",
+		SnapStoreProxyURL:          "http://snap-store-proxy",
+		AptMirror:                  "http://my.archive.ubuntu.com",
+		ContainerInheritProperties: "ca-certs,apt-primary",
+		AuthorizedKeys: `
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN8h8XBpjS9aBUG5cdoSWubs7wT2Lc/BEZIUQCqoaOZR juju-client-key
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN8h8XBpjS9aBUG5cdoSWubs7wT2Lc/BEZIUQCqoaOZR juju-system-key
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN8h8XBpjS9aBUG5cdoSWubs7wT2Lc/BEZIUQCqoaOZR foo-key
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN8h8XBpjS9aBUG5cdoSWubs7wT2Lc/BEZIUQCqoaOZR bar-key`[1:],
+	})
+}
+
 func (s *provisionerMockSuite) setup(c *gc.C) *gomock.Controller {
 	ctrl := gomock.NewController(c)
 
@@ -2092,6 +2009,8 @@ func (s *provisionerMockSuite) setup(c *gc.C) *gomock.Controller {
 	s.container = mocks.NewMockMachine(ctrl)
 	s.device = mocks.NewMockLinkLayerDevice(ctrl)
 	s.parentDevice = mocks.NewMockLinkLayerDevice(ctrl)
+	s.agentProvisionerService = mocks.NewMockAgentProvisionerService(ctrl)
+	s.keyUpdaterService = mocks.NewMockKeyUpdaterService(ctrl)
 
 	return ctrl
 }
