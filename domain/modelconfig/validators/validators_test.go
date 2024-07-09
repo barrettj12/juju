@@ -414,6 +414,25 @@ func (*validatorsSuite) TestAuthorizedKeysChangedNoChange(c *gc.C) {
 	c.Check(err, jc.ErrorIsNil)
 }
 
+// TestContainerNetworkingMethodValueValid asserts that valid container
+// networking method values are accepted by model config.
+func (*validatorsSuite) TestContainerNetworkingMethodValueValid(c *gc.C) {
+	validContainerNetworkingMethods := []string{"", "local", "provider"}
+
+	for _, containerNetworkingMethod := range validContainerNetworkingMethods {
+		cfg, err := config.New(config.NoDefaults, map[string]any{
+			"name":                           "wallyworld",
+			"uuid":                           testing.ModelTag.Id(),
+			"type":                           "sometype",
+			config.ContainerNetworkingMethod: containerNetworkingMethod,
+		})
+		c.Assert(err, jc.ErrorIsNil)
+
+		_, err = ContainerNetworkingMethodValue()(context.Background(), cfg, nil)
+		c.Check(err, jc.ErrorIsNil)
+	}
+}
+
 // TestContainerNetworkingMethodChanged asserts that if we change the
 // container networking method between two revisions of model config, we get a
 // [config.ValidationError].
