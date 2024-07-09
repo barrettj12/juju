@@ -352,6 +352,11 @@ func (api *ProvisionerAPI) ContainerManagerConfig(ctx context.Context, args para
 		return result, fmt.Errorf("getting container manager config: %w", err)
 	}
 
+	containerNetworkingMethod, err := api.AgentProvisionerService.ContainerNetworkingMethod(ctx)
+	if err != nil {
+		return result, fmt.Errorf("getting container networking method: %w", err)
+	}
+
 	result.ManagerConfig = make(map[string]string)
 	result.ManagerConfig[container.ConfigModelUUID] = cfg.ModelID.String()
 	result.ManagerConfig[config.LXDSnapChannel] = cfg.LXDSnapChannel
@@ -362,7 +367,7 @@ func (api *ProvisionerAPI) ContainerManagerConfig(ctx context.Context, args para
 		result.ManagerConfig[config.ContainerImageMetadataDefaultsDisabledKey] = "true"
 	}
 	result.ManagerConfig[config.ContainerImageStreamKey] = cfg.ImageStream
-	result.ManagerConfig[config.ContainerNetworkingMethod] = cfg.NetworkingMethod.String()
+	result.ManagerConfig[config.ContainerNetworkingMethod] = containerNetworkingMethod.String()
 
 	return result, nil
 }

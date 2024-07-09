@@ -21,7 +21,8 @@ type AgentProvisionerService interface {
 	ContainerManagerConfigForType(context.Context, instance.ContainerType) (containermanager.Config, error)
 	// ContainerConfig returns the container configuration.
 	ContainerConfig(ctx context.Context) (params.ContainerConfig, error)
-
+	// ContainerNetworkingMethod returns the networking method to use for newly
+	// provisioned containers.
 	ContainerNetworkingMethod(ctx context.Context) (containermanager.NetworkingMethod, error)
 }
 
@@ -34,6 +35,7 @@ type ControllerConfigService interface {
 
 // StoragePoolGetter instances get a storage pool by name.
 type StoragePoolGetter interface {
+	// GetStoragePoolByName returns the storage pool with the specified name.
 	GetStoragePoolByName(ctx context.Context, name string) (*storage.Config, error)
 }
 

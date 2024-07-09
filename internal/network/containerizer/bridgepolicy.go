@@ -101,7 +101,7 @@ func (p *BridgePolicy) FindMissingBridgesForContainer(
 	for spaceID, devices := range devicesPerSpace {
 		for _, device := range devices {
 			if device.Type() == corenetwork.BridgeDevice {
-				if p.containerNetworkingMethod != "local" && skippedDeviceNames.Contains(device.Name()) {
+				if p.containerNetworkingMethod != containermanager.NetworkingMethodLocal && skippedDeviceNames.Contains(device.Name()) {
 					continue
 				}
 				addInfo := p.allSpaces.GetByID(spaceID)
@@ -211,7 +211,7 @@ func (p *BridgePolicy) findSpacesAndDevicesForContainer(
 	// networking method is "provider", we need to patch the type of these
 	// devices so they appear as bridges to allow the bridge policy logic
 	// to make use of them.
-	if p.containerNetworkingMethod == "provider" {
+	if p.containerNetworkingMethod == containermanager.NetworkingMethodProvider {
 		for spaceID, devsInSpace := range devicesPerSpace {
 			for devIdx, dev := range devsInSpace {
 				if dev.VirtualPortType() != corenetwork.OvsPort {
@@ -400,7 +400,7 @@ func (p *BridgePolicy) spaceNamesForPrinting(ids set.Strings) string {
 // If the machine is in multiple spaces, we return an error with the possible
 // spaces that the user can use to constrain connectivity.
 func (p *BridgePolicy) inferContainerSpaces(host Machine, containerId string) (corenetwork.SpaceInfos, error) {
-	if p.containerNetworkingMethod == "local" {
+	if p.containerNetworkingMethod == containermanager.NetworkingMethodLocal {
 		alphaInfo := p.allSpaces.GetByID(corenetwork.AlphaSpaceId)
 		return corenetwork.SpaceInfos{*alphaInfo}, nil
 	}
@@ -521,7 +521,7 @@ func (p *BridgePolicy) PopulateContainerLinkLayerDevices(
 	// Check if we are missing the default space and can fill it in with a local bridge
 	if len(missingSpaces) == 1 &&
 		missingSpaces.ContainsID(corenetwork.AlphaSpaceId) &&
-		p.containerNetworkingMethod == "local" {
+		p.containerNetworkingMethod == containermanager.NetworkingMethodLocal {
 
 		localBridgeName := network.DefaultLXDBridge
 
