@@ -109,12 +109,6 @@ func (s *Service) ContainerManagerConfigForType(
 		)
 	}
 
-	networkingMethod, err := s.determineContainerNetworkingMethod(ctx, cfg[config.ContainerNetworkingMethod])
-	if err != nil {
-		return containermanager.Config{}, fmt.Errorf("cannot determine container networking method: %w", err)
-	}
-	rval.NetworkingMethod = networkingMethod
-
 	if containerType == instance.LXD {
 		rval.LXDSnapChannel = cfg[config.LXDSnapChannel]
 	}
@@ -125,16 +119,16 @@ func (s *Service) ContainerManagerConfigForType(
 	return rval, nil
 }
 
-// determineContainerNetworkingMethod consults the passed-in provider and
-// specified model config value to determine the networking method for the
-// container.
-func (s *Service) ContainerNetworkingMethod(
-	ctx context.Context,
-) (containermanager.NetworkingMethod, error) {
+// ContainerNetworkingMethod determines the container networking method that
+// should be used, based on the model config key "container-networking-method"
+// and the current provider.
+func (s *Service) ContainerNetworkingMethod(ctx context.Context) (containermanager.NetworkingMethod, error) {
+	cfg, err := s.st.GetModelConfigKeyValues(ctx, config.ContainerNetworkingMethod)
+	if err != nil {
+		return "", fmt.Errorf("getting container networking method from model config: %w", err)
+	}
 
-	// TODO: get userDefinedNetworkingMethod from model config
-
-	method := containermanager.NetworkingMethod(userDefinedNetworkingMethod)
+	method := containermanager.NetworkingMethod(cfg[config.ContainerNetworkingMethod])
 	switch method {
 	case containermanager.NetworkingMethodLocal, containermanager.NetworkingMethodProvider:
 		return method, nil

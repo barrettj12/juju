@@ -55,7 +55,6 @@ func (s *suite) TestContainerManagerConfigForType(c *gc.C) {
 		config.ContainerImageMetadataDefaultsDisabledKey: "true",
 		config.ContainerImageStreamKey:                   "released",
 	}, nil)
-	s.provider.EXPECT().SupportsContainerAddresses(gomock.Any()).Return(false, nil)
 
 	service := NewService(s.modelID, s.state, s.providerGetter)
 	cfg, err := service.ContainerManagerConfigForType(context.Background(), instance.LXD)
@@ -66,18 +65,21 @@ func (s *suite) TestContainerManagerConfigForType(c *gc.C) {
 		LXDSnapChannel:           "5.0/stable",
 		MetadataDefaultsDisabled: true,
 		ModelID:                  s.modelID,
-		NetworkingMethod:         containermanager.NetworkingMethodLocal,
 	})
 }
 
 // TestDetermineNetworkingMethodUserDefined tests that if the user specifies a
 // container networking method in model config, this will be used in the
 // container manager config.
-func (s *suite) TestDetermineNetworkingMethodUserDefined(c *gc.C) {
+func (s *suite) TestContainerNetworkingMethodUserDefined(c *gc.C) {
 	defer s.setupMocks(c).Finish()
 
+	s.state.EXPECT().GetModelConfigKeyValues(gomock.Any(), gomock.Any()).Return(map[string]string{
+		config.ContainerNetworkingMethod: "local",
+	}, nil)
+
 	service := NewService(s.modelID, s.state, s.providerGetter)
-	method, err := service.determineContainerNetworkingMethod(context.Background(), "local")
+	method, err := service.ContainerNetworkingMethod(context.Background())
 	c.Assert(err, jc.ErrorIsNil)
 	c.Check(method, gc.Equals, containermanager.NetworkingMethodLocal)
 }
@@ -87,12 +89,15 @@ func (s *suite) TestDetermineNetworkingMethodUserDefined(c *gc.C) {
 func (s *suite) TestDetermineNetworkingMethodProviderNotSupported(c *gc.C) {
 	defer s.setupMocks(c).Finish()
 
+	s.state.EXPECT().GetModelConfigKeyValues(gomock.Any(), gomock.Any()).Return(map[string]string{
+		config.ContainerNetworkingMethod: "", // auto-configure
+	}, nil)
 	providerGetter := func(ctx context.Context) (Provider, error) {
 		return nil, errors.NotSupportedf("provider type %T", Provider(nil))
 	}
-	service := NewService(s.modelID, s.state, providerGetter)
 
-	method, err := service.determineContainerNetworkingMethod(context.Background(), "local")
+	service := NewService(s.modelID, s.state, providerGetter)
+	method, err := service.ContainerNetworkingMethod(context.Background())
 	c.Assert(err, jc.ErrorIsNil)
 	c.Check(method, gc.Equals, containermanager.NetworkingMethodLocal)
 }
@@ -103,10 +108,13 @@ func (s *suite) TestDetermineNetworkingMethodProviderNotSupported(c *gc.C) {
 func (s *suite) TestDetermineNetworkingMethodProviderSupports(c *gc.C) {
 	defer s.setupMocks(c).Finish()
 
+	s.state.EXPECT().GetModelConfigKeyValues(gomock.Any(), gomock.Any()).Return(map[string]string{
+		config.ContainerNetworkingMethod: "", // auto-configure
+	}, nil)
 	s.provider.EXPECT().SupportsContainerAddresses(gomock.Any()).Return(true, nil)
 
 	service := NewService(s.modelID, s.state, s.providerGetter)
-	method, err := service.determineContainerNetworkingMethod(context.Background(), "")
+	method, err := service.ContainerNetworkingMethod(context.Background())
 	c.Assert(err, jc.ErrorIsNil)
 	c.Check(method, gc.Equals, containermanager.NetworkingMethodProvider)
 }
@@ -117,10 +125,13 @@ func (s *suite) TestDetermineNetworkingMethodProviderSupports(c *gc.C) {
 func (s *suite) TestDetermineNetworkingMethodProviderDoesntSupport(c *gc.C) {
 	defer s.setupMocks(c).Finish()
 
+	s.state.EXPECT().GetModelConfigKeyValues(gomock.Any(), gomock.Any()).Return(map[string]string{
+		config.ContainerNetworkingMethod: "", // auto-configure
+	}, nil)
 	s.provider.EXPECT().SupportsContainerAddresses(gomock.Any()).Return(false, nil)
 
 	service := NewService(s.modelID, s.state, s.providerGetter)
-	method, err := service.determineContainerNetworkingMethod(context.Background(), "")
+	method, err := service.ContainerNetworkingMethod(context.Background())
 	c.Assert(err, jc.ErrorIsNil)
 	c.Check(method, gc.Equals, containermanager.NetworkingMethodLocal)
 }
