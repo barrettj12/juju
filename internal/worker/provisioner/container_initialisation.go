@@ -11,6 +11,7 @@ import (
 
 	"github.com/juju/juju/agent"
 	apiprovisioner "github.com/juju/juju/api/agent/provisioner"
+	"github.com/juju/juju/core/containermanager"
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/machinelock"
@@ -151,7 +152,7 @@ func (cs *ContainerSetup) acquireLock(abort <-chan struct{}, comment string) (fu
 var getContainerInitialiser = func(
 	ct instance.ContainerType,
 	snapChannels map[string]string,
-	containerNetworkingMethod string,
+	containerNetworkingMethod containermanager.NetworkingMethod,
 ) (container.Initialiser, error) {
 	if ct != instance.LXD {
 		return nil, errors.NotSupportedf("container type %q", ct)

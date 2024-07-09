@@ -21,6 +21,8 @@ type AgentProvisionerService interface {
 	ContainerManagerConfigForType(context.Context, instance.ContainerType) (containermanager.Config, error)
 	// ContainerConfig returns the container configuration.
 	ContainerConfig(ctx context.Context) (params.ContainerConfig, error)
+
+	ContainerNetworkingMethod(ctx context.Context) (containermanager.NetworkingMethod, error)
 }
 
 // ControllerConfigService is the interface that the provisioner facade

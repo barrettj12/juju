@@ -13,8 +13,8 @@ import (
 	"github.com/juju/collections/set"
 	"github.com/juju/errors"
 
+	"github.com/juju/juju/core/containermanager"
 	corenetwork "github.com/juju/juju/core/network"
-	"github.com/juju/juju/environs"
 	internallogger "github.com/juju/juju/internal/logger"
 	"github.com/juju/juju/internal/network"
 	"github.com/juju/juju/state"
@@ -49,7 +49,7 @@ type BridgePolicy struct {
 	// It's one of:
 	//  - provider
 	//  - local
-	containerNetworkingMethod string
+	containerNetworkingMethod containermanager.NetworkingMethod
 
 	// networkService provides the network domain functionality.
 	networkService NetworkService
@@ -57,8 +57,11 @@ type BridgePolicy struct {
 
 // NewBridgePolicy returns a new BridgePolicy for the input environ config
 // getter and state indirection.
-func NewBridgePolicy(ctx context.Context, cfgGetter environs.ConfigGetter, networkService NetworkService) (*BridgePolicy, error) {
-	cfg := cfgGetter.Config()
+func NewBridgePolicy(ctx context.Context,
+	networkService NetworkService,
+	netBondReconfigureDelay int,
+	containerNetworkingMethod containermanager.NetworkingMethod,
+) (*BridgePolicy, error) {
 
 	allSpaces, err := networkService.GetAllSpaces(ctx)
 	if err != nil {
@@ -72,8 +75,8 @@ func NewBridgePolicy(ctx context.Context, cfgGetter environs.ConfigGetter, netwo
 	return &BridgePolicy{
 		allSpaces:                 allSpaces,
 		allSubnets:                allSubnets,
-		netBondReconfigureDelay:   cfg.NetBondReconfigureDelay(),
-		containerNetworkingMethod: cfg.ContainerNetworkingMethod(),
+		netBondReconfigureDelay:   netBondReconfigureDelay,
+		containerNetworkingMethod: containerNetworkingMethod,
 		networkService:            networkService,
 	}, nil
 }

@@ -231,7 +231,7 @@ func (s *Service) SetModelConfig(
 		return fmt.Errorf("constructing new model config with model defaults: %w", err)
 	}
 
-	_, err = s.modelValidator.Validate(ctx, setCfg, nil)
+	_, err = s.setModelConfigValidator().Validate(ctx, setCfg, nil)
 	if err != nil {
 		return fmt.Errorf("validating model config to set for model: %w", err)
 	}
@@ -324,6 +324,28 @@ type spaceValidator struct {
 // given space exists.
 func (v *spaceValidator) HasSpace(ctx context.Context, spaceName string) (bool, error) {
 	return v.st.SpaceExists(ctx, spaceName)
+}
+
+// setModelConfigValidator returns a config validator to use on model config
+// when it is being set initially. The validator returned will check that:
+// - Network space exists.
+// - Secret backend exists.
+// - Container networking method is valid.
+func (s *Service) setModelConfigValidator(
+	additional ...config.Validator,
+) config.Validator {
+	agg := &config.AggregateValidator{
+		Validators: []config.Validator{
+			validators.SpaceChecker(&spaceValidator{
+				st: s.st,
+			}),
+			validators.SecretBackendChecker(&dummySecretsBackendProvider{}),
+			validators.ContainerNetworkingMethodValue(),
+			s.modelValidator,
+		},
+	}
+	agg.Validators = append(agg.Validators, additional...)
+	return agg
 }
 
 // updateModelConfigValidator returns a config validator to use on model config

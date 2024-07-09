@@ -10,6 +10,7 @@ import (
 	"github.com/juju/errors"
 	"github.com/juju/loggo/v2"
 
+	"github.com/juju/juju/core/containermanager"
 	"github.com/juju/juju/environs/config"
 )
 
@@ -73,6 +74,25 @@ func AuthorizedKeysChange() config.ValidatorFunc {
 		return cfg, &config.ValidationError{
 			InvalidAttrs: []string{config.AuthorizedKeysKey},
 			Reason:       "authorized-keys cannot be changed",
+		}
+	}
+}
+
+// ContainerNetworkingMethodValue checks that the container networking method
+// supplied to model config is a valid value.
+//
+//	todo: add test for this
+func ContainerNetworkingMethodValue() config.ValidatorFunc {
+	return func(ctx context.Context, cfg, old *config.Config) (*config.Config, error) {
+		switch cfg.ContainerNetworkingMethod() {
+		case "", containermanager.NetworkingMethodLocal.String(),
+			containermanager.NetworkingMethodProvider.String():
+			return cfg, nil
+		}
+
+		return cfg, &config.ValidationError{
+			InvalidAttrs: []string{config.ContainerNetworkingMethod},
+			Reason:       `container-networking-method must be one of: "", "local", "provider"`,
 		}
 	}
 }

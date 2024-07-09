@@ -860,7 +860,16 @@ func (api *ProvisionerAPI) processEachContainer(ctx context.Context, args params
 		return errors.Trace(err)
 	}
 
-	policy, err := containerizer.NewBridgePolicy(ctx, env, api.networkService)
+	containerNetworkingMethod, err := api.AgentProvisionerService.ContainerNetworkingMethod(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot get container networking method: %w", err)
+	}
+
+	policy, err := containerizer.NewBridgePolicy(ctx,
+		api.networkService,
+		env.Config().NetBondReconfigureDelay(), // TODO: replace with model config service
+		containerNetworkingMethod,
+	)
 	if err != nil {
 		return errors.Trace(err)
 	}

@@ -128,13 +128,25 @@ func (s *Service) ContainerManagerConfigForType(
 // determineContainerNetworkingMethod consults the passed-in provider and
 // specified model config value to determine the networking method for the
 // container.
-func (s *Service) determineContainerNetworkingMethod(
+func (s *Service) ContainerNetworkingMethod(
 	ctx context.Context,
-	userDefinedNetworkingMethod string,
 ) (containermanager.NetworkingMethod, error) {
+
+	// TODO: get userDefinedNetworkingMethod from model config
+
+	method := containermanager.NetworkingMethod(userDefinedNetworkingMethod)
+	switch method {
+	case containermanager.NetworkingMethodLocal, containermanager.NetworkingMethodProvider:
+		return method, nil
+	case "":
+		// Auto-configure container networking method below
+	default:
+		return "", fmt.Errorf("invalid container networking method %q in model config", method)
+	}
+
 	provider, err := s.providerGetter(ctx)
 	if errors.Is(err, errors.NotSupported) {
-		// Provider doesn't supports container addresses
+		// Provider doesn't have the SupportsContainerAddresses method
 		return containermanager.NetworkingMethodLocal, nil
 	}
 	if err != nil {
@@ -144,27 +156,17 @@ func (s *Service) determineContainerNetworkingMethod(
 		)
 	}
 
-	method := containermanager.NetworkingMethod(userDefinedNetworkingMethod)
-	if method != "" {
-		// User specified a container networking method - use that
-		return method, nil
+	supports, err := provider.SupportsContainerAddresses(envcontext.WithoutCredentialInvalidator(ctx))
+	if err != nil {
+		return "", fmt.Errorf(
+			"cannot determine if provider supports container addresses: %w",
+			err,
+		)
 	}
-
-	// Auto-configure container networking method
-	method = containermanager.NetworkingMethodLocal
-	if provider != nil {
-		supports, err := provider.SupportsContainerAddresses(envcontext.WithoutCredentialInvalidator(ctx))
-		if err != nil {
-			return "", fmt.Errorf(
-				"cannot determine if provider supports container addresses: %w",
-				err,
-			)
-		}
-		if supports {
-			return containermanager.NetworkingMethodProvider, nil
-		}
+	if supports {
+		return containermanager.NetworkingMethodProvider, nil
 	}
-	return method, nil
+	return containermanager.NetworkingMethodLocal, nil
 }
 
 // ContainerConfig returns the container config for the model.
