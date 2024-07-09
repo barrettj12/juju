@@ -791,7 +791,7 @@ func Validate(_ctx context.Context, cfg, old *Config) error {
 
 	if v, ok := cfg.defined[ContainerNetworkingMethod].(string); ok {
 		switch v {
-		case "", string(containermanager.NetworkingMethodLocal), string(containermanager.NetworkingMethodProvider):
+		case "", containermanager.NetworkingMethodLocal.String(), containermanager.NetworkingMethodProvider.String():
 			// valid values
 		default:
 			return fmt.Errorf("Invalid value for container-networking-method - %v", v)

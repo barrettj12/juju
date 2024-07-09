@@ -98,7 +98,7 @@ func (cs *ContainerSetup) initContainerDependencies(abort <-chan struct{}, manag
 	initialiser, err := getContainerInitialiser(
 		cs.containerType,
 		snapChannels,
-		managerCfg.PopValue(config.ContainerNetworkingMethod),
+		containermanager.NetworkingMethod(managerCfg.PopValue(config.ContainerNetworkingMethod)),
 	)
 	if err != nil {
 		return errors.Annotate(err, "initialising container infrastructure on host machine")
