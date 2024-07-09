@@ -356,7 +356,7 @@ CIDRs specifying what ingress can be applied to offers in this model.`,
 		Group:       environschema.EnvironGroup,
 	},
 	ContainerNetworkingMethod: {
-		Description: "Method of container networking setup - one of fan, provider, local",
+		Description: `Method of container networking setup - one of "provider", "local", or "" (auto-configure).`,
 		Type:        environschema.Tstring,
 		Group:       environschema.EnvironGroup,
 	},
