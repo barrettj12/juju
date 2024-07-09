@@ -6,7 +6,6 @@ package provisioner_test
 import (
 	"context"
 	"fmt"
-	stdtesting "testing"
 	"time"
 
 	"github.com/juju/errors"
@@ -47,12 +46,6 @@ import (
 	coretesting "github.com/juju/juju/testing"
 	"github.com/juju/juju/testing/factory"
 )
-
-//go:generate go run go.uber.org/mock/mockgen -typed -package mocks -destination mocks/service_mock.go github.com/juju/juju/apiserver/facades/agent/provisioner AgentProvisionerService,KeyUpdaterService
-
-func TestPackage(t *stdtesting.T) {
-	coretesting.MgoTestPackage(t)
-}
 
 type provisionerSuite struct {
 	testing.ApiServerSuite
@@ -1857,6 +1850,8 @@ func (s *provisionerMockSuite) TestContainerAlreadyProvisionedError(c *gc.C) {
 	c.Assert(err, gc.ErrorMatches, `container "0/lxd/0" already provisioned as "juju-8ebd6c-0"`)
 }
 
+// TODO: this is not a great test name, this test does not even call
+// ProvisionerAPI.GetContainerProfileInfo.
 func (s *provisionerMockSuite) TestGetContainerProfileInfo(c *gc.C) {
 	ctrl := s.setup(c)
 	defer ctrl.Finish()
@@ -1942,8 +1937,9 @@ func (s *provisionerMockSuite) TestContainerManagerConfig(c *gc.C) {
 			ImageStream:              "released",
 			LXDSnapChannel:           "5.0/stable",
 			MetadataDefaultsDisabled: true,
-			NetworkingMethod:         containermanager.NetworkingMethodProvider,
 		}, nil)
+	s.agentProvisionerService.EXPECT().ContainerNetworkingMethod(gomock.Any()).
+		Return(containermanager.NetworkingMethodProvider, nil)
 
 	containerManagerConfig, err := api.ContainerManagerConfig(context.Background(),
 		params.ContainerManagerConfigParams{Type: instance.LXD},
@@ -2014,3 +2010,9 @@ func (s *provisionerMockSuite) setup(c *gc.C) *gomock.Controller {
 
 	return ctrl
 }
+
+// TODO: add tests for the following facade methods
+//  - GetContainerProfileInfo
+//  - HostChangesForContainers
+//  - PrepareContainerInterfaceInfo
+//  - GetContainerInterfaceInfo

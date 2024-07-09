@@ -120,6 +120,45 @@ func (c *MockAgentProvisionerServiceContainerManagerConfigForTypeCall) DoAndRetu
 	return c
 }
 
+// ContainerNetworkingMethod mocks base method.
+func (m *MockAgentProvisionerService) ContainerNetworkingMethod(arg0 context.Context) (containermanager.NetworkingMethod, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ContainerNetworkingMethod", arg0)
+	ret0, _ := ret[0].(containermanager.NetworkingMethod)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ContainerNetworkingMethod indicates an expected call of ContainerNetworkingMethod.
+func (mr *MockAgentProvisionerServiceMockRecorder) ContainerNetworkingMethod(arg0 any) *MockAgentProvisionerServiceContainerNetworkingMethodCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ContainerNetworkingMethod", reflect.TypeOf((*MockAgentProvisionerService)(nil).ContainerNetworkingMethod), arg0)
+	return &MockAgentProvisionerServiceContainerNetworkingMethodCall{Call: call}
+}
+
+// MockAgentProvisionerServiceContainerNetworkingMethodCall wrap *gomock.Call
+type MockAgentProvisionerServiceContainerNetworkingMethodCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockAgentProvisionerServiceContainerNetworkingMethodCall) Return(arg0 containermanager.NetworkingMethod, arg1 error) *MockAgentProvisionerServiceContainerNetworkingMethodCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockAgentProvisionerServiceContainerNetworkingMethodCall) Do(f func(context.Context) (containermanager.NetworkingMethod, error)) *MockAgentProvisionerServiceContainerNetworkingMethodCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockAgentProvisionerServiceContainerNetworkingMethodCall) DoAndReturn(f func(context.Context) (containermanager.NetworkingMethod, error)) *MockAgentProvisionerServiceContainerNetworkingMethodCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // MockKeyUpdaterService is a mock of KeyUpdaterService interface.
 type MockKeyUpdaterService struct {
 	ctrl     *gomock.Controller
