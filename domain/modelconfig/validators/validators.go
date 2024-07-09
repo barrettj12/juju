@@ -80,8 +80,6 @@ func AuthorizedKeysChange() config.ValidatorFunc {
 
 // ContainerNetworkingMethodValue checks that the container networking method
 // supplied to model config is a valid value.
-//
-//	todo: add test for this
 func ContainerNetworkingMethodValue() config.ValidatorFunc {
 	return func(ctx context.Context, cfg, old *config.Config) (*config.Config, error) {
 		switch cfg.ContainerNetworkingMethod() {
